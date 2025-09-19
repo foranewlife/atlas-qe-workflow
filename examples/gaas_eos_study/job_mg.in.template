@@ -1,0 +1,39 @@
+&CONTROL
+   calculation      = 'scf',
+   verbosity        = 'high',
+   restart_mode     = 'from_scratch',
+   tstress          = .t.,
+   tprnfor          = .t.
+   outdir           = './',
+   prefix           = 'C',
+   etot_conv_thr    = 1.0d-6
+   forc_conv_thr    = 1.0d-5
+   disk_io          = 'nowf',
+   pseudo_dir       = '.'
+/
+&SYSTEM
+   ibrav            = 0
+   ecutwfc          = 60
+   ecutrho          = 240
+   occupations      = 'smearing'
+   degauss          = 0.01
+   smearing         = 'mp'
+   input_dft        = 'pz',
+   # nat, ntyp将由程序根据结构自动设置
+/
+&ELECTRONS
+   electron_maxstep = 500
+   conv_thr         = 1.0d-7
+   mixing_mode      = 'local-TF'
+   mixing_beta      = 0.2
+/
+&IONS
+/
+&CELL
+/
+&FCP
+/
+&RISM
+/
+
+# ATOMIC_SPECIES, K_POINTS, CELL_PARAMETERS, ATOMIC_POSITIONS将由程序自动生成

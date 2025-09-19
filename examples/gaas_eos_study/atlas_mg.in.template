@@ -1,0 +1,40 @@
+# CELLFILE, ELEMENTS, ppfile将由程序自动生成
+
+# Template for single element calculations
+iSYSTEM = ATLAS_JOB
+GAP = 0.20
+KEDF = {KEDF}
+exc = 1
+mgp_type = MGPA
+ScfIter = 300
+L_NLPS_EDF = .false.
+paraA = -1.8
+Gammax = -1.0
+nlpsf_ke = 8
+hc_type = 2
+HC_RR = 1.02
+rHC_A = 0.45
+rHC_B = 0.10
+Lpbc = .ture.
+LCELL = 14
+max_kfr = 3.0
+min_kfr = 1E-5
+LDAK_KF_NUM = 60
+ildak = 9
+LMSCF = .false.
+LMIXXX = .true.
+rz_rat = 10
+NORDER = 10
+LVW = F
+lforce = .false.
+lstress = .false.
+lpden = .true.
+i_guess = 0
+IGOAL = 0
+iopm = 1
+nssp = 0
+sfreq = 1
+lpdebug = F
+lsplineii = .true.
+lspline = .true.
+scftol = 1e-7
