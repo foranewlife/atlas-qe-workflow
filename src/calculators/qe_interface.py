@@ -84,39 +84,61 @@ class QECalculator(BaseCalculator):
         return created_files
 
     def _write_scf_input(self, input_file: Path, structure: Dict[str, Any], parameters: Dict[str, Any]):
-        """Write QE SCF input file."""
+        """Write QE SCF input file based on real format."""
         with open(input_file, 'w') as f:
-            # Header
+            # Control section
             f.write("&CONTROL\n")
-            f.write(f"  calculation = 'scf'\n")
-            f.write(f"  prefix = 'qe_calc'\n")
-            f.write(f"  outdir = './outdir'\n")
-            f.write(f"  pseudo_dir = './'\n")
-            f.write(f"  verbosity = 'high'\n")
-            f.write("/\n\n")
+            f.write("   calculation      = 'scf',\n")
+            f.write("   verbosity        = 'high',\n")
+            f.write("   restart_mode     = 'from_scratch',\n")
+            f.write("   tstress          = .t.,\n")
+            f.write("   tprnfor          = .t.\n")
+            f.write("   outdir           = './',\n")
+            f.write(f"   prefix           = 'C',\n")  # Using 'C' as in real example
+            f.write("   etot_conv_thr    = 1.0d-6\n")
+            f.write("   forc_conv_thr    = 1.0d-5\n")
+            f.write("   disk_io          = 'nowf',\n")
+            f.write("   pseudo_dir       = '.'\n")
+            f.write("/\n")
 
-            # System parameters
+            # System section
             f.write("&SYSTEM\n")
             self._write_system_section(f, structure, parameters)
-            f.write("/\n\n")
+            f.write("/\n")
 
-            # Electronic parameters
+            # Electrons section
             f.write("&ELECTRONS\n")
             self._write_electrons_section(f, parameters)
-            f.write("/\n\n")
+            f.write("/\n")
+
+            # Empty sections that appear in real files
+            f.write("&IONS\n")
+            f.write("/\n")
+            f.write("&CELL\n")
+            f.write("/\n")
+            f.write("&FCP\n")
+            f.write("/\n")
+            f.write("&RISM\n")
+            f.write("/\n")
+
+            # Pseudopotentials section (optional, might be ignored)
+            if "element_pp_mapping" in parameters:
+                f.write("&PSEUDOPOTENTIALS\n")
+                for element, pp_file in parameters["element_pp_mapping"].items():
+                    f.write(f"   {element.lower()}               = {pp_file}\n")
+                f.write("/\n")
 
             # Atomic species
             self._write_atomic_species(f, structure, parameters)
 
-            # Atomic positions
-            self._write_atomic_positions(f, structure)
-
             # K-points
             self._write_k_points(f, parameters)
 
-            # Cell parameters (if needed)
-            if structure.get("lattice"):
-                self._write_cell_parameters(f, structure)
+            # Cell parameters
+            self._write_cell_parameters(f, structure)
+
+            # Atomic positions
+            self._write_atomic_positions(f, structure)
 
     def _write_relax_input(self, input_file: Path, structure: Dict[str, Any], parameters: Dict[str, Any]):
         """Write QE structure optimization input file."""
@@ -159,46 +181,50 @@ class QECalculator(BaseCalculator):
                 self._write_cell_parameters(f, structure)
 
     def _write_system_section(self, f, structure: Dict[str, Any], parameters: Dict[str, Any]):
-        """Write the SYSTEM section."""
+        """Write the SYSTEM section based on real format."""
         # Basic system parameters
         num_atoms = len(structure["species"])
-        unique_species = list(set(structure["species"]))
+        unique_species = list(dict.fromkeys(structure["species"]))  # Preserve order
 
-        f.write(f"  ibrav = 0\n")  # Use CELL_PARAMETERS
-        f.write(f"  nat = {num_atoms}\n")
-        f.write(f"  ntyp = {len(unique_species)}\n")
+        f.write(f"   ibrav            = 0\n")  # Use CELL_PARAMETERS
+        f.write(f"   nat              = {num_atoms}\n")
+        f.write(f"   ntyp             = {len(unique_species)}\n")
 
         # Electronic structure parameters
-        ecutwfc = parameters.get("ecutwfc", 60.0)
-        f.write(f"  ecutwfc = {ecutwfc}\n")
+        ecutwfc = parameters.get("ecutwfc", 60)
+        f.write(f"   ecutwfc          = {ecutwfc}\n")
 
-        if "ecutrho" in parameters:
-            f.write(f"  ecutrho = {parameters['ecutrho']}\n")
+        # ecutrho from real example
+        ecutrho = parameters.get("ecutrho", ecutwfc * 4)  # Default is 4x ecutwfc
+        f.write(f"   ecutrho          = {ecutrho}\n")
 
-        # Exchange-correlation functional
-        xc_functional = parameters.get("xc_functional", "PBE")
+        # Occupations (from real example)
+        f.write("   occupations      = 'smearing'\n")
+        f.write("   degauss          = 0.01\n")
+        f.write("   smearing         = 'mp'\n")  # Methfessel-Paxton as in real example
+
+        # Exchange-correlation functional (from real example using LDA)
+        xc_functional = parameters.get("xc_functional", "LDA")
         if xc_functional == "LDA":
-            f.write("  input_dft = 'PZ'\n")
+            f.write("   input_dft        = 'pz',\n")  # PZ = Perdew-Zunger LDA
         elif xc_functional == "PBE":
-            f.write("  input_dft = 'PBE'\n")
+            f.write("   input_dft        = 'pbe',\n")
         elif xc_functional == "PBEsol":
-            f.write("  input_dft = 'PBESOL'\n")
-
-        # Occupations
-        f.write("  occupations = 'smearing'\n")
-        f.write("  smearing = 'gaussian'\n")
-        f.write("  degauss = 0.01\n")
+            f.write("   input_dft        = 'pbesol',\n")
 
     def _write_electrons_section(self, f, parameters: Dict[str, Any]):
-        """Write the ELECTRONS section."""
-        conv_thr = parameters.get("conv_thr", 1e-6)
-        f.write(f"  conv_thr = {conv_thr}\n")
+        """Write the ELECTRONS section based on real format."""
+        # From real example
+        electron_maxstep = parameters.get("electron_maxstep", 500)
+        f.write(f"   electron_maxstep = {electron_maxstep}\n")
 
-        mixing_beta = parameters.get("mixing_beta", 0.7)
-        f.write(f"  mixing_beta = {mixing_beta}\n")
+        conv_thr = parameters.get("conv_thr", 1e-7)  # Real example uses 1e-7
+        f.write(f"   conv_thr         = {conv_thr:.1e}\n")
 
-        electron_maxstep = parameters.get("electron_maxstep", 100)
-        f.write(f"  electron_maxstep = {electron_maxstep}\n")
+        # Mixing parameters from real example
+        f.write("   mixing_mode      = 'local-TF'\n")
+        mixing_beta = parameters.get("mixing_beta", 0.2)  # Real example uses 0.2
+        f.write(f"   mixing_beta      = {mixing_beta}\n")
 
     def _write_atomic_species(self, f, structure: Dict[str, Any], parameters: Dict[str, Any]):
         """Write ATOMIC_SPECIES section."""
@@ -224,20 +250,30 @@ class QECalculator(BaseCalculator):
         f.write("\n")
 
     def _write_atomic_positions(self, f, structure: Dict[str, Any]):
-        """Write ATOMIC_POSITIONS section."""
-        f.write("ATOMIC_POSITIONS crystal\n")
+        """Write ATOMIC_POSITIONS section based on real format."""
+        f.write("ATOMIC_POSITIONS angstrom\n")  # Real example uses angstrom
 
-        for species, coord in zip(structure["species"], structure["coords"]):
-            f.write(f"{species} {coord[0]:.6f} {coord[1]:.6f} {coord[2]:.6f}\n")
+        # Convert fractional coordinates to Cartesian if needed
+        lattice = structure["lattice"]
+        coords = structure["coords"]
+        species = structure["species"]
+
+        import numpy as np
+        lattice_matrix = np.array(lattice)
+
+        for spec, coord in zip(species, coords):
+            # Convert fractional to Cartesian coordinates
+            cart_coord = np.dot(coord, lattice_matrix)
+            f.write(f"{spec} {cart_coord[0]:.10f} {cart_coord[1]:.10f} {cart_coord[2]:.10f}  \n")
 
         f.write("\n")
 
     def _write_k_points(self, f, parameters: Dict[str, Any]):
-        """Write K_POINTS section."""
-        k_points = parameters.get("k_points", [8, 8, 8])
+        """Write K_POINTS section based on real format."""
+        k_points = parameters.get("k_points", [9, 9, 9])  # Real example uses 9x9x9
 
         f.write("K_POINTS automatic\n")
-        f.write(f"{k_points[0]} {k_points[1]} {k_points[2]} 0 0 0\n")
+        f.write(f"{k_points[0]} {k_points[1]} {k_points[2]}  0 0 0\n")
         f.write("\n")
 
     def _write_cell_parameters(self, f, structure: Dict[str, Any]):
@@ -375,39 +411,68 @@ class QECalculator(BaseCalculator):
         return results
 
     def _parse_scf_output(self, output_file: Path) -> Dict[str, Any]:
-        """Parse SCF output file."""
+        """Parse SCF output file based on real QE format."""
         results = {
             "scf_history": [],
             "final_energy": None,
+            "final_energy_ry": None,
             "convergence_achieved": False,
-            "computational_details": {}
+            "computational_details": {},
+            "energy_components": {}
         }
 
         with open(output_file, 'r') as f:
             content = f.read()
 
-        # Parse SCF iterations
+        # Parse SCF iterations - QE format: "total energy = -XX.XXXXX Ry"
         scf_pattern = r"total energy\s*=\s*([-\d\.]+)\s*Ry"
         energies = re.findall(scf_pattern, content)
 
         for i, energy in enumerate(energies):
+            energy_ry = float(energy)
             results["scf_history"].append({
                 "iteration": i + 1,
-                "energy": float(energy) * 13.6057  # Convert Ry to eV
+                "energy_ry": energy_ry,
+                "energy_ev": energy_ry * 13.6057  # Convert Ry to eV
             })
 
-        # Final energy
-        if energies:
-            results["final_energy"] = float(energies[-1]) * 13.6057
+        # Final energy from the exclamation mark line: "!    total energy = -XX.XXXXX Ry"
+        final_energy_pattern = r"!\s*total energy\s*=\s*([-\d\.]+)\s*Ry"
+        final_energy_match = re.search(final_energy_pattern, content)
+        if final_energy_match:
+            energy_ry = float(final_energy_match.group(1))
+            results["final_energy_ry"] = energy_ry
+            results["final_energy"] = energy_ry * 13.6057  # Convert to eV
+
+        # Parse energy components
+        self._parse_qe_energy_components(content, results["energy_components"])
 
         # Check convergence
-        if "convergence has been achieved" in content:
+        if "convergence has been achieved" in content or final_energy_match:
             results["convergence_achieved"] = True
 
         # Parse computational details
         self._parse_qe_computational_details(content, results["computational_details"])
 
         return results
+
+    def _parse_qe_energy_components(self, content: str, components: Dict[str, float]):
+        """Parse QE energy components."""
+        component_patterns = {
+            "one_electron": r"one-electron contribution\s*=\s*([-\d\.]+)\s*Ry",
+            "hartree": r"hartree contribution\s*=\s*([-\d\.]+)\s*Ry",
+            "xc": r"xc contribution\s*=\s*([-\d\.]+)\s*Ry",
+            "ewald": r"ewald contribution\s*=\s*([-\d\.]+)\s*Ry",
+            "smearing": r"smearing contrib\. \(-TS\)\s*=\s*([-\d\.]+)\s*Ry",
+            "internal_energy": r"internal energy E=F\+TS\s*=\s*([-\d\.]+)\s*Ry"
+        }
+
+        for component, pattern in component_patterns.items():
+            match = re.search(pattern, content)
+            if match:
+                energy_ry = float(match.group(1))
+                components[component + "_ry"] = energy_ry
+                components[component + "_ev"] = energy_ry * 13.6057
 
     def _parse_xml_output(self, xml_file: Path) -> Dict[str, Any]:
         """Parse QE XML output for additional data."""

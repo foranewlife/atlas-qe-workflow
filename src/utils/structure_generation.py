@@ -77,6 +77,25 @@ class StructureGenerator:
                 "basis_positions": np.array([
                     [0.0, 0.0, 0.0]
                 ])
+            },
+            "zinc_blende": {  # Zinc blende structure (like GaAs)
+                "lattice_vectors": np.array([
+                    [1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0, 1.0]
+                ]),
+                "basis_positions": np.array([
+                    # FCC lattice for first element (As)
+                    [0.0, 0.0, 0.0],
+                    [0.0, 0.5, 0.5],
+                    [0.5, 0.0, 0.5],
+                    [0.5, 0.5, 0.0],
+                    # Shifted FCC lattice for second element (Ga)
+                    [0.25, 0.25, 0.25],
+                    [0.25, 0.75, 0.75],
+                    [0.75, 0.25, 0.75],
+                    [0.75, 0.75, 0.25]
+                ])
             }
         }
 
