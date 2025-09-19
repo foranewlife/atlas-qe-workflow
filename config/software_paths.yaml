@@ -1,0 +1,24 @@
+# Software executable paths configuration
+# Modify these paths according to your system
+
+atlas:
+  executable: "/path/to/atlas/bin/atlas"
+  mpi_command: null  # ATLAS typically runs single-threaded
+  num_cores: 1
+
+qe:
+  executable: "/path/to/qe/bin/pw.x"
+  mpi_command: "mpirun"
+  num_cores: 4
+
+# Pseudopotential directories
+pseudopotentials:
+  base_path: "/path/to/pseudopotentials"
+  atlas_dir: "atlas_pp"
+  qe_dir: "qe_pp"
+
+# Workspace configuration
+workspace:
+  base_directory: "./data/calculations"
+  cleanup_after_completion: false
+  max_disk_usage_gb: 100
