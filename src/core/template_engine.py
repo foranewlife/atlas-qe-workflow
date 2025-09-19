@@ -119,13 +119,16 @@ class TemplateProcessor:
         combination: ParameterCombination
     ) -> str:
         """Insert QE-specific auto-generated sections."""
-        # Generate ATOMIC_SPECIES section
-        atomic_species = self._generate_qe_atomic_species(structure, combination)
+        # Generate all QE sections
+        pseudopotentials_section = self._generate_qe_pseudopotentials(structure, combination)
+        atomic_species_section = self._generate_qe_atomic_species(structure, combination)
 
-        # For now, just append at the end - in real implementation,
-        # this would replace placeholder sections or insert at specific locations
-        if not atomic_species in content:
-            content += f"\n{atomic_species}\n"
+        # Add sections at the end
+        if "&PSEUDOPOTENTIALS" not in content:
+            content += f"\n{pseudopotentials_section}\n"
+
+        if "ATOMIC_SPECIES" not in content:
+            content += f"{atomic_species_section}\n"
 
         return content
 
@@ -153,6 +156,23 @@ class TemplateProcessor:
             species_lines.append(f"   {element}  {mass:.3f}  {pp_file}")
 
         return '\n'.join(species_lines)
+
+    def _generate_qe_pseudopotentials(
+        self,
+        structure: StructureConfig,
+        combination: ParameterCombination
+    ) -> str:
+        """Generate QE &PSEUDOPOTENTIALS section."""
+        pp_set = self.config.pseudopotential_sets[combination.pseudopotential_set]
+
+        pp_lines = ["&PSEUDOPOTENTIALS"]
+        for element in structure.elements:
+            pp_file = pp_set[element]
+            # QE pseudopotentials section uses lowercase element names
+            pp_lines.append(f"   {element.lower():12} = {pp_file}")
+        pp_lines.append("/")
+
+        return '\n'.join(pp_lines)
 
 
 class StructureProcessor:
@@ -279,22 +299,29 @@ class StructureProcessor:
         return '\n'.join(poscar_lines)
 
     def _scale_poscar_volume(self, poscar_content: str, volume_scale_factor: float) -> str:
-        """Scale volume in POSCAR content."""
+        """Scale volume in POSCAR content by scaling lattice vectors."""
         lines = poscar_content.strip().split('\n')
-        if len(lines) < 5:
+        if len(lines) < 6:
             raise ValueError("Invalid POSCAR format")
 
         # Volume scales as cube root of linear scaling
         linear_scale = volume_scale_factor ** (1.0/3.0)
 
-        # Scale lattice constant (line 1, 0-indexed)
-        scale_line = lines[1].strip()
-        try:
-            current_scale = float(scale_line)
-            new_scale = current_scale * linear_scale
-            lines[1] = f"   {new_scale:.8f}"
-        except ValueError:
-            logger.warning("Could not parse lattice scale factor")
+        # Keep line 1 (scaling factor) as 1.0 or original value
+        # Scale the lattice vectors (lines 2-4, 0-indexed)
+        for i in range(2, 5):
+            if i < len(lines):
+                vector_line = lines[i].strip()
+                components = vector_line.split()
+                if len(components) >= 3:
+                    try:
+                        # Scale each component of the lattice vector
+                        scaled_components = [float(comp) * linear_scale for comp in components]
+                        # Format with high precision to match reference
+                        formatted_line = "    " + "    ".join(f"{comp:.16f}" for comp in scaled_components)
+                        lines[i] = formatted_line
+                    except ValueError:
+                        logger.warning(f"Could not parse lattice vector on line {i+1}")
 
         return '\n'.join(lines)
 
@@ -358,6 +385,9 @@ class InputFileGenerator:
             f.write(poscar_content)
         generated_files['structure'] = poscar_file
 
+        # Copy pseudopotential files to working directory
+        self._copy_pseudopotential_files(structure, combination, output_dir)
+
         # Generate input file from template
         input_content = self.template_processor.process_template(
             combination.template_file,
@@ -365,6 +395,10 @@ class InputFileGenerator:
             structure,
             combination
         )
+
+        # For QE, add CELL_PARAMETERS and ATOMIC_POSITIONS from POSCAR
+        if combination.software == 'qe':
+            input_content = self._add_qe_structure_sections(input_content, poscar_content)
 
         # Determine input filename based on software
         if combination.software == 'atlas':
@@ -381,3 +415,115 @@ class InputFileGenerator:
 
         logger.debug(f"Generated input files in {output_dir}")
         return generated_files
+
+    def _copy_pseudopotential_files(
+        self,
+        structure: StructureConfig,
+        combination: ParameterCombination,
+        output_dir: Path
+    ):
+        """
+        Copy required pseudopotential files to the working directory.
+
+        Args:
+            structure: Structure configuration
+            combination: Parameter combination
+            output_dir: Working directory
+        """
+        import shutil
+
+        # Get pseudopotential set
+        pp_set = self.config.pseudopotential_sets[combination.pseudopotential_set]
+
+        # Get pseudopotential source directory
+        pp_source_dir = self.config.data_paths.get('pseudopotentials', '.')
+        if not Path(pp_source_dir).is_absolute():
+            pp_source_dir = self.config_dir / pp_source_dir
+
+        # Copy each required pseudopotential file
+        for element in structure.elements:
+            pp_filename = pp_set[element]
+            source_path = Path(pp_source_dir) / pp_filename
+            target_path = output_dir / pp_filename
+
+            if source_path.exists():
+                shutil.copy2(source_path, target_path)
+                logger.debug(f"Copied pseudopotential: {pp_filename}")
+            else:
+                logger.warning(f"Pseudopotential file not found: {source_path}")
+                # Try to find in current config directory
+                alt_source = self.config_dir / pp_filename
+                if alt_source.exists():
+                    shutil.copy2(alt_source, target_path)
+                    logger.debug(f"Copied pseudopotential from config dir: {pp_filename}")
+                else:
+                    logger.error(f"Could not find pseudopotential file: {pp_filename}")
+
+    def _add_qe_structure_sections(self, input_content: str, poscar_content: str) -> str:
+        """
+        Add CELL_PARAMETERS and ATOMIC_POSITIONS sections to QE input from POSCAR.
+
+        Args:
+            input_content: QE input template content
+            poscar_content: POSCAR file content
+
+        Returns:
+            Complete QE input with structure sections
+        """
+        # Parse POSCAR
+        lines = poscar_content.strip().split('\n')
+        if len(lines) < 8:
+            raise ValueError("Invalid POSCAR format")
+
+        # Extract information
+        comment = lines[0]
+        scaling_factor = float(lines[1])
+        lattice_vectors = []
+        for i in range(2, 5):
+            vector = [float(x) for x in lines[i].split()]
+            lattice_vectors.append(vector)
+
+        # Element names and counts
+        elements = lines[5].split()
+        counts = [int(x) for x in lines[6].split()]
+
+        # Coordinate type
+        coord_type = lines[7].strip()
+        direct_coords = coord_type.lower().startswith('d')
+
+        # Atomic positions
+        positions = []
+        pos_start = 8
+        for element, count in zip(elements, counts):
+            for i in range(count):
+                if pos_start + len(positions) < len(lines):
+                    coords = [float(x) for x in lines[pos_start + len(positions)].split()]
+                    positions.append((element, coords))
+
+        # Generate CELL_PARAMETERS section
+        cell_params = ["", "CELL_PARAMETERS angstrom"]
+        for vector in lattice_vectors:
+            # Apply scaling factor
+            scaled_vector = [v * scaling_factor for v in vector]
+            cell_params.append(f"{scaled_vector[0]:.14f} {scaled_vector[1]:.14f} {scaled_vector[2]:.14f}")
+
+        # Generate ATOMIC_POSITIONS section
+        atomic_positions = ["", "ATOMIC_POSITIONS angstrom"]
+        for element, coords in positions:
+            if direct_coords:
+                # Convert from direct to Cartesian coordinates
+                cart_coords = [0.0, 0.0, 0.0]
+                for i in range(3):
+                    for j in range(3):
+                        cart_coords[i] += coords[j] * lattice_vectors[j][i] * scaling_factor
+            else:
+                # Already Cartesian, just apply scaling
+                cart_coords = [c * scaling_factor for c in coords]
+
+            atomic_positions.append(f"{element} {cart_coords[0]:.10f} {cart_coords[1]:.10f} {cart_coords[2]:.10f}")
+
+        # Add sections to input content
+        input_content += '\n'.join(cell_params) + '\n'
+        input_content += '\n'.join(atomic_positions) + '\n'
+
+        return input_content

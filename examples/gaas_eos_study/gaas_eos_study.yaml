@@ -13,7 +13,7 @@ pseudopotential_sets:
     Ga: "ga.lda.nlpp.UPF"
     As: "as.lda.nlpp.UPF"
   mg_lda:
-    Mg: "mg.lda.upf"
+    Mg: "Mg_OEPP_PZ.UPF"
 
 # 结构定义 - 每个结构有自己的体积参数和平衡体积
 structures:
@@ -93,5 +93,4 @@ parameter_combinations:
 # 数据路径配置
 data_paths:
   base_directory: "./results"
-  pseudopotentials: "/Users/chenys/project/TB-OFDFT/phase2/project/ncpp_density/eos/qe/eos/gaas"
-  reference_data: "/Users/chenys/project/TB-OFDFT/phase2/project/ncpp_density/eos"
+  pseudopotentials: "."

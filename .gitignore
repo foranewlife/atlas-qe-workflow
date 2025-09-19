@@ -95,3 +95,6 @@ config/cluster_config.yaml
 *.zip
 *.dat
 *.bin
+
+results
+test_output/
