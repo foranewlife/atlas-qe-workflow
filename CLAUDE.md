@@ -8,6 +8,7 @@
 每个阶段工作结束后要交付可运行的测试脚本并更新CLAUDE.md.
 不要在根目录产生任何文件，除非他是项目相关的。
 测试请在project目录新建目录进行
+python环境在.venv文件夹
 
 ### 完整工作流架构
 ```
@@ -173,7 +174,7 @@ results/
 ### 架构演进
 ```
 阶段1: 单体脚本 → 阶段2: 模块化引擎 → 阶段3: 智能工作流
-[当前位置: 阶段1完成，向阶段2迁移]
+[当前位置: 阶段2完成，向阶段3迁移]
 ```
 
 ### 关键组件状态
@@ -203,7 +204,7 @@ results/
 
 ```bash
 # 1. 干运行模式：生成输入文件和任务数据库
-python scripts/run_eos_workflow_modular.py examples/gaas_eos_study/gaas_eos_study.yaml --dry-run
+python scripts/run_distributed_workflow.py examples/gaas_eos_study/gaas_eos_study.yaml --dry-run
 
 # 2. 查询任务状态
 python scripts/query_tasks.py --summary                    # 总体进度
@@ -211,7 +212,7 @@ python scripts/query_tasks.py --structure mg_fcc           # 特定结构
 python scripts/query_tasks.py --status pending             # 特定状态
 
 # 3. 完整工作流执行（需要配置ATLAS/QE可执行文件路径）
-python scripts/run_eos_workflow_modular.py examples/gaas_eos_study/gaas_eos_study.yaml
+python scripts/run_distributed_workflow.py examples/gaas_eos_study/gaas_eos_study.yaml
 
 # 4. 导出结果
 python scripts/query_tasks.py --export results/results.json --format json
@@ -225,7 +226,7 @@ python scripts/query_tasks.py --export results/results.json --format json
 - **进度监控**: 实时查询工具，按结构、状态、组合多维度查询
 
 #### 2. 测试脚本和工具
-- `scripts/run_eos_workflow_modular.py`: 主工作流执行器
+- `scripts/run_distributed_workflow.py`: 主工作流执行器
 - `scripts/query_tasks.py`: 任务状态查询和监控工具
 - 完整的131个计算任务自动生成和管理
 
@@ -316,6 +317,7 @@ data/{system}/
 - [x] **结果收集** - 基础的能量提取和状态记录
 - [x] **状态追踪** - SQLite数据库缓存系统
 - [x] **查询分析** - 命令行查询工具和数据导出
+- [x] **主执行器** - 替换 run_eos_workflow_modular.py 为 run_distributed_workflow.py
 
 ### 下一阶段开发计划
 1. **软件路径配置**: 集成实际ATLAS/QE可执行文件配置
