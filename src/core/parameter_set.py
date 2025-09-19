@@ -121,7 +121,11 @@ class ParameterSet:
             # ATLAS: functional, gap
             functional = self.parameters.get("functional", "")
             gap = self.parameters.get("gap", "")
-            return f"{functional}_gap{str(gap).replace('.', '')}"
+            gap_str = str(gap).replace('.', '')
+            # Ensure at least 3 digits for gap
+            if len(gap_str) == 2:  # e.g., "02" -> "020"
+                gap_str += "0"
+            return f"{functional}_gap{gap_str}"
 
         elif self.software == "qe":
             # QE: configuration, k_points
