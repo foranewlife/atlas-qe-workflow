@@ -575,3 +575,28 @@ class TaskManager:
                 writer.writerows(results)
 
         logger.info(f"Exported {len(results)} results to {output_file}")
+
+    def get_tasks_by_status(self, status: TaskStatus) -> List[TaskDefinition]:
+        """Get all tasks with a specific status."""
+        return self.db.get_tasks_by_status(status)
+
+    def update_task_completion(
+        self,
+        task_id: str,
+        energy: Optional[float] = None,
+        converged: bool = False,
+        execution_time: Optional[float] = None,
+        output_files: Optional[List[str]] = None
+    ):
+        """Update task with completion results."""
+        metadata = {}
+        if output_files:
+            metadata['output_files'] = output_files
+
+        self.update_task_status(
+            task_id=task_id,
+            status=TaskStatus.COMPLETED,
+            energy=energy,
+            converged=converged,
+            metadata=metadata
+        )

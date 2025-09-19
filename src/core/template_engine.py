@@ -94,6 +94,9 @@ class TemplateProcessor:
         combination: ParameterCombination
     ) -> str:
         """Insert ATLAS-specific auto-generated sections."""
+        # Generate CELLFILE line (ATLAS needs this to read structure file)
+        cellfile_line = "CELLFILE = POSCAR"
+
         # Generate ELEMENTS line
         elements_line = f"ELEMENTS = {' '.join(structure.elements)}"
 
@@ -109,6 +112,7 @@ class TemplateProcessor:
         # Insert in reverse order to maintain positions
         lines.insert(insert_pos, ppfile_line)
         lines.insert(insert_pos, elements_line)
+        lines.insert(insert_pos, cellfile_line)
 
         return '\n'.join(lines)
 
@@ -527,3 +531,57 @@ class InputFileGenerator:
         input_content += '\n'.join(atomic_positions) + '\n'
 
         return input_content
+
+
+class InputFileGenerator:
+    """
+    Simplified input file generator for distributed workflow execution.
+
+    Generates calculation input files by combining templates, structure data,
+    and parameter substitutions.
+    """
+
+    def __init__(self, workflow_config: WorkflowConfiguration):
+        """Initialize input file generator."""
+        self.workflow_config = workflow_config
+        self.template_processor = TemplateProcessor(
+            workflow_config,
+            Path(workflow_config.data_paths.get('base_directory', '.'))
+        )
+
+    def generate_calculation_input(
+        self,
+        structure: StructureConfig,
+        combination: ParameterCombination,
+        volume_factor: float,
+        output_directory: str
+    ) -> Dict[str, Path]:
+        """
+        Generate calculation input files.
+
+        Args:
+            structure: Structure configuration
+            combination: Parameter combination
+            volume_factor: Volume scaling factor
+            output_directory: Output directory path
+
+        Returns:
+            Dictionary of generated file paths
+        """
+        try:
+            output_dir = Path(output_directory)
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            # Generate input files using template processor
+            generated_files = self.template_processor.generate_input_files(
+                structure=structure,
+                combination=combination,
+                volume_factor=volume_factor,
+                output_dir=output_dir
+            )
+
+            return generated_files
+
+        except Exception as e:
+            logger.error(f"Error generating calculation input: {e}")
+            raise
