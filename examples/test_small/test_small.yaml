@@ -1,0 +1,34 @@
+system: "test_small"
+description: "Small test calculation for distributed workflow validation"
+
+# 共享赝势集定义
+pseudopotential_sets:
+  gaas_lda_lpp_density:
+    Ga: "ga.lda.lpp.lpp_density.UPF"
+    As: "as.lda.lpp.lpp_density.UPF"
+
+# 结构定义 - 只测试一个结构
+structures:
+  - name: "gaas_zincblende"
+    elements: ["Ga", "As"]
+    file: "POSCAR"
+    description: "GaAs zincblende structure"
+    volume_range: [0.95, 1.05]  # 小范围
+    volume_points: 3  # 只计算3个点
+
+# 参数组合 - 只测试ATLAS一种方法
+parameter_combinations:
+  - name: "atlas_kedf701_gaas_lda_lpp_density"
+    software: "atlas"
+    template_file: "atlas.in.template"
+    applies_to_structures: ["gaas_zincblende"]
+    pseudopotential_set: "gaas_lda_lpp_density"
+    template_substitutions:
+      KEDF: 701
+
+# 数据路径配置
+data_paths:
+  base_directory: "results"
+  templates_directory: "templates"
+  pseudopotentials_directory: "data/pseudopotentials"
+  structures_directory: "data/structures"
