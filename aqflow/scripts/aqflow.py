@@ -20,6 +20,8 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 from aqflow.core.eos_controller import EosController
+from aqflow.core.process_orchestrator import ProcessOrchestrator
+from aqflow.core.task_creation import TaskDef
 from aqflow.utils.logging_config import setup_logging
 
 
@@ -50,26 +52,56 @@ def ensure_service(host: str, port: int):
     raise RuntimeError("service failed to start")
 
 
-def submit_local(software: str, host: str, port: int, work_dir: Path):
-    ensure_service(host, port)
-    payload = json.dumps({"software": software, "work_dir": str(work_dir)}).encode()
-    req = Request(svc_url("/run", host, port), data=payload, headers={"Content-Type": "application/json"}, method="POST")
-    with urlopen(req, timeout=10) as resp:
-        data = json.loads(resp.read().decode())
-        print(f"submitted: {data['id']}")
-    print(f"dashboard: {svc_url('/dashboard', host, port)}")
+def submit_orchestrator(software: str, work_dir: Path, resources: Path) -> int:
+    """Submit current directory as a single task to the orchestrator."""
+    work_dir = work_dir.resolve()
+    # Detect input file
+    if software == "qe":
+        inp = work_dir / ("qe.in" if (work_dir / "qe.in").exists() else "job.in")
+    else:
+        inp = work_dir / "atlas.in"
+    if not inp.exists():
+        print(f"Input file not found: {inp}")
+        return 1
+    task_id = f"{software}_{work_dir.name}_{int(time.time())}"
+    task = TaskDef(
+        task_id=task_id,
+        software=software,
+        work_dir=work_dir,
+        input_file=inp,
+        expected_outputs=["job.out", "eos_data.json"],
+        meta={"mode": "manual", "cwd": str(work_dir)},
+    )
+    orch = ProcessOrchestrator(resources, Path("results"))
+    orch.load_tasks([task])
+    orch.run()
+    # Check rc by presence of job.out
+    rc = 0 if (work_dir / "job.out").exists() else 1
+    print(f"submitted {task_id}, rc={rc}")
+    return rc
 
 
 def cmd_server(args: argparse.Namespace) -> int:
-    subprocess.call([sys.executable, "-m", "aqflow.scripts.task_service", "--host", args.host, "--port", str(args.port)])
+    """Start task service. Default: background; use --foreground to run in foreground."""
+    if getattr(args, "foreground", False):
+        return subprocess.call([sys.executable, "-m", "aqflow.scripts.task_service", "--host", args.host, "--port", str(args.port)])
+    # Background mode
+    logs_dir = Path("logs"); logs_dir.mkdir(parents=True, exist_ok=True)
+    log_file = logs_dir / "task_service.log"
+    with open(log_file, "a", buffering=1) as lf:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "aqflow.scripts.task_service", "--host", args.host, "--port", str(args.port)],
+            stdout=lf, stderr=lf, start_new_session=True
+        )
+    pidfile = logs_dir / "task_service.pid"
+    pidfile.write_text(str(proc.pid))
+    print(f"Task service started (pid {proc.pid}) at http://{args.host}:{args.port}  logs: {log_file}")
     return 0
 
 
 def cmd_local(args: argparse.Namespace, software: str) -> int:
-    host = args.host or DEFAULT_HOST
-    port = args.port or DEFAULT_PORT
-    submit_local(software, host, port, Path(os.getcwd()))
-    return 0
+    # Submit current directory to orchestrator (not the local service)
+    return submit_orchestrator(software, Path(os.getcwd()), Path(args.resources))
 
 
 def cmd_eos(args: argparse.Namespace) -> int:
@@ -98,16 +130,15 @@ def main():
     p_srv = sub.add_parser("server", help="Start local task service and dashboard")
     p_srv.add_argument("--host", default=DEFAULT_HOST)
     p_srv.add_argument("--port", type=int, default=DEFAULT_PORT)
+    p_srv.add_argument("--foreground", action="store_true", help="Run in foreground (default: background)")
     p_srv.set_defaults(func=cmd_server)
 
     p_atlas = sub.add_parser("atlas", help="Run atlas in current directory via service")
-    p_atlas.add_argument("--host", default=DEFAULT_HOST)
-    p_atlas.add_argument("--port", type=int, default=DEFAULT_PORT)
+    p_atlas.add_argument("--resources", default="config/resources.yaml")
     p_atlas.set_defaults(func=lambda a: cmd_local(a, "atlas"))
 
     p_qe = sub.add_parser("qe", help="Run qe in current directory via service")
-    p_qe.add_argument("--host", default=DEFAULT_HOST)
-    p_qe.add_argument("--port", type=int, default=DEFAULT_PORT)
+    p_qe.add_argument("--resources", default="config/resources.yaml")
     p_qe.set_defaults(func=lambda a: cmd_local(a, "qe"))
 
     p_eos = sub.add_parser("eos", help="Run EOS workflow from config")
@@ -126,4 +157,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-

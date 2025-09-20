@@ -186,7 +186,7 @@ results/
 - **结果收集** ✅ 能量提取和状态跟踪
 - **状态追踪** ✅ SQLite数据库状态管理
 - **监控面板** ✅ 命令行查询工具
-- **模块化架构** ✅ 完整的src/模块组织
+- **模块化架构** ✅ 完整的 aqflow/ 模块组织
 
 ### 当前可用功能
 - **完整输入文件生成**: 支持多结构、多方法的输入文件自动创建
@@ -204,18 +204,18 @@ results/
 
 ```bash
 # 1. 干运行模式：生成输入文件和任务数据库
-python scripts/run_distributed_workflow.py examples/gaas_eos_study/gaas_eos_study.yaml --dry-run
+aqflow eos examples/gaas_eos_study/gaas_eos_study.yaml --dry-run
 
 # 2. 查询任务状态
-python scripts/query_tasks.py --summary                    # 总体进度
-python scripts/query_tasks.py --structure mg_fcc           # 特定结构
-python scripts/query_tasks.py --status pending             # 特定状态
+# 看板与状态（可选）
+aqflow server                                             # 启动本地看板服务
+# 浏览 http://127.0.0.1:8765/dashboard 查看任务状态
 
 # 3. 完整工作流执行（需要配置ATLAS/QE可执行文件路径）
-python scripts/run_distributed_workflow.py examples/gaas_eos_study/gaas_eos_study.yaml
+aqflow eos examples/gaas_eos_study/gaas_eos_study.yaml
 
 # 4. 导出结果
-python scripts/query_tasks.py --export results/results.json --format json
+# 结果位于 results/ 下；状态持久化 results/tasks_simple.json
 ```
 
 ### 当前交付成果
@@ -226,7 +226,7 @@ python scripts/query_tasks.py --export results/results.json --format json
 - **进度监控**: 实时查询工具，按结构、状态、组合多维度查询
 
 #### 2. 测试脚本和工具
-- `scripts/run_distributed_workflow.py`: 主工作流执行器
+- `aqflow eos`: 主工作流执行器（统一 CLI）
 - `scripts/query_tasks.py`: 任务状态查询和监控工具
 - 完整的131个计算任务自动生成和管理
 
@@ -333,7 +333,7 @@ data/{system}/
 
 ```
 atlas-qe-workflow/
-├── src/                    # 核心源代码模块
+├── aqflow/                 # 核心源代码模块
 │   ├── core/              # 核心功能模块
 │   ├── calculators/       # 计算器接口
 │   └── utils/             # 工具函数
@@ -351,7 +351,7 @@ atlas-qe-workflow/
 
 ### 文件分类规则
 - **可执行脚本**: 放入`scripts/`目录
-- **核心模块**: 放入`src/`目录，按功能分组
+- **核心模块**: 放入 `aqflow/` 目录，按功能分组
 - **配置文件**: 放入`config/`或`examples/`目录
 - **测试文件**: 放入`tests/`目录
 - **文档**: 放入`docs/`目录
@@ -359,7 +359,7 @@ atlas-qe-workflow/
 - **废弃文件**: 移入`archive/`目录
 
 ### 开发规范
-1. **新功能开发**: 先在`src/`中创建模块，再在`scripts/`中创建调用脚本
+1. **新功能开发**: 在 `aqflow/` 中创建模块；CLI 放 `aqflow/scripts/`
 2. **配置管理**: 示例配置放`examples/`，系统配置放`config/`
 3. **测试驱动**: 每个新模块都应有对应的测试文件
 4. **文档同步**: 重要功能变更需更新CLAUDE.md和相关文档
