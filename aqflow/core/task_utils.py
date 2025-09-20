@@ -22,7 +22,7 @@ from typing import Optional, Tuple
 
 from .configuration import ResourceConfigurationLoader, ResourceConfig, ResourceType
 from aqflow.software import get_runner
-from .task_creation import TaskDef
+from .tasks import TaskDef
 
 
 @dataclass

@@ -20,8 +20,8 @@ from .configuration import (
     ResourceConfigurationLoader,
 )
 import yaml
-from .task_creation import TaskCreator, TaskDef
-from .task_processing import RunResult
+from .tasks import TaskCreator, TaskDef
+from .task_utils import RunResult
 from .state_machine import ensure_board, add_tasks, save_board, run as sm_run, BOARD_PATH
 
 logger = logging.getLogger(__name__)
