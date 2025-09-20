@@ -1,0 +1,16 @@
+resources:
+  - name: local_echo
+    type: local
+    cores: 4
+    software:
+      atlas:
+        path: "/bin/echo"
+        cores: 1
+      qe:
+        path: "/bin/echo"
+        cores: 1
+scheduler:
+  max_parallel: 2
+  poll_interval: 1
+timeouts:
+  default: 5

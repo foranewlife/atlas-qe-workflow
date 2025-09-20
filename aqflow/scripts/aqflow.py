@@ -3,9 +3,9 @@
 aqflow: Unified CLI for Atlas–QE workflow
 
 Subcommands:
-  aqflow server [--host H --port P]    Start lightweight local task service (dashboard)
-  aqflow atlas                         Run atlas in current directory via service
-  aqflow qe                            Run qe in current directory via service
+  aqflow board                         Show a lightweight tasks board (no server)
+  aqflow atlas                         Run atlas in current directory
+  aqflow qe                            Run qe in current directory
   aqflow eos <config.yaml>             Run EOS workflow using unified orchestrator
 """
 from __future__ import annotations
@@ -20,40 +20,17 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 from aqflow.core.eos_controller import EosController
-from aqflow.core.process_orchestrator import ProcessOrchestrator
 from aqflow.core.task_creation import TaskDef
 from aqflow.utils.logging_config import setup_logging
+from aqflow.core.state_machine import ensure_board, add_tasks, save_board, run as sm_run, BOARD_PATH, load_board, GLOBAL_HOME
 
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 
 
-def svc_url(path: str, host: str, port: int) -> str:
-    return f"http://{host}:{port}{path}"
-
-
-def ensure_service(host: str, port: int):
-    try:
-        with urlopen(svc_url("/health", host, port), timeout=2) as resp:
-            if resp.read().decode().strip() == "ok":
-                return
-    except Exception:
-        pass
-    print("Starting task service...")
-    subprocess.Popen([sys.executable, "-m", "aqflow.scripts.task_service", "--host", host, "--port", str(port)])
-    for _ in range(25):
-        try:
-            with urlopen(svc_url("/health", host, port), timeout=1) as resp:
-                if resp.read().decode().strip() == "ok":
-                    return
-        except Exception:
-            time.sleep(0.2)
-    raise RuntimeError("service failed to start")
-
-
 def submit_orchestrator(software: str, work_dir: Path, resources: Path) -> int:
-    """Submit current directory as a single task to the orchestrator."""
+    """Submit current directory as a single task to the state machine."""
     work_dir = work_dir.resolve()
     # Detect input file
     if software == "qe":
@@ -63,39 +40,92 @@ def submit_orchestrator(software: str, work_dir: Path, resources: Path) -> int:
     if not inp.exists():
         print(f"Input file not found: {inp}")
         return 1
+    # Append task to board.json
+    board = ensure_board(BOARD_PATH, meta={
+        "tool": software,
+        "args": list(sys.argv),
+        "resources_file": str(resources),
+        "root": str(Path.cwd()),
+    })
     task_id = f"{software}_{work_dir.name}_{int(time.time())}"
-    task = TaskDef(
-        task_id=task_id,
-        software=software,
-        work_dir=work_dir,
-        input_file=inp,
-        expected_outputs=["job.out", "eos_data.json"],
-        meta={"mode": "manual", "cwd": str(work_dir)},
-    )
-    orch = ProcessOrchestrator(resources, Path("results"))
-    orch.load_tasks([task])
-    orch.run()
-    # Check rc by presence of job.out
+    entry = {
+        "id": task_id,
+        "name": f"{software} {work_dir.name}",
+        "type": software,
+        "workdir": str(work_dir),
+        "status": "queued",
+    }
+    add_tasks(board, [entry])
+    save_board(BOARD_PATH, board)
+    # Run state machine
+    sm_run(resources, BOARD_PATH)
     rc = 0 if (work_dir / "job.out").exists() else 1
     print(f"submitted {task_id}, rc={rc}")
     return rc
 
 
-def cmd_server(args: argparse.Namespace) -> int:
-    """Start task service. Default: background; use --foreground to run in foreground."""
-    if getattr(args, "foreground", False):
-        return subprocess.call([sys.executable, "-m", "aqflow.scripts.task_service", "--host", args.host, "--port", str(args.port)])
-    # Background mode
-    logs_dir = Path("logs"); logs_dir.mkdir(parents=True, exist_ok=True)
-    log_file = logs_dir / "task_service.log"
-    with open(log_file, "a", buffering=1) as lf:
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "aqflow.scripts.task_service", "--host", args.host, "--port", str(args.port)],
-            stdout=lf, stderr=lf, start_new_session=True
-        )
-    pidfile = logs_dir / "task_service.pid"
-    pidfile.write_text(str(proc.pid))
-    print(f"Task service started (pid {proc.pid}) at http://{args.host}:{args.port}  logs: {log_file}")
+def cmd_board(args: argparse.Namespace) -> int:
+    # Aggregate all boards from GLOBAL_HOME (symlinks) and show running tasks by root
+    boards_dir = GLOBAL_HOME
+    if not boards_dir.exists():
+        print("No boards found. Run a workflow to generate aqflow/board.json.")
+        return 0
+    paths = sorted([p for p in boards_dir.glob("*.json") if p.name != "latest.json"], key=lambda p: p.name)
+    items: list[tuple[str, dict]] = []
+    for p in paths:
+        data = load_board(p)
+        if not data or not isinstance(data.get("tasks"), dict):
+            continue
+        items.append((data.get("meta", {}).get("root", str(p)), data))
+
+    # Group by root, show only running by default (unless --all)
+    show_all = getattr(args, "all", False)
+    for root, data in items:
+        tasks = list((data.get("tasks") or {}).values())
+        # Try load resources.yaml for quick ssh tail when remote
+        resmap = {}
+        try:
+            import yaml  # noqa: F401
+            rpath = (data.get("meta") or {}).get("resources_file")
+            if rpath and Path(rpath).exists():
+                rdata = yaml.safe_load(Path(rpath).read_text()) or {}
+                for r in (rdata.get("resources") or []):
+                    name = r.get("name")
+                    if name:
+                        resmap[name] = r
+        except Exception:
+            resmap = {}
+        if not show_all:
+            tasks = [t for t in tasks if t.get("status") == "running"]
+        if not tasks:
+            continue
+        print(f"root={root}")
+        # Header
+        print("task_id  name                 type   status   elapsed  quick")
+        for t in tasks:
+            tid = t.get("id", "-")
+            name = (t.get("name") or "-")[:20].ljust(20)
+            typ = (t.get("type") or "-").ljust(6)
+            st = (t.get("status") or "-").ljust(8)
+            # elapsed
+            start = t.get("start_time") or 0
+            end = t.get("end_time") or None
+            now = time.time()
+            sec = int((end or now) - start) if start else 0
+            if sec >= 3600:
+                elapsed = f"{sec//3600:02d}:{(sec%3600)//60:02d}h"
+            else:
+                elapsed = f"{sec//60:02d}:{sec%60:02d}m"
+            quick = f"cd {t.get('workdir', '.')}; tail -n 200 job.out"
+            rname = t.get("resource")
+            res = resmap.get(rname) if rname else None
+            if res and res.get("type") == "remote":
+                host = (res.get("user") + "@" if res.get("user") else "") + (res.get("host") or "")
+                base = res.get("workdir")
+                if host and base:
+                    quick = f"ssh {host} 'tail -n 200 {base.rstrip('/')}/{t.get('id','')}/job.out'"
+            print(f"{tid:7s} {name} {typ} {st} {elapsed:7s} {quick}")
+        print()
     return 0
 
 
@@ -127,17 +157,15 @@ def main():
     parser = argparse.ArgumentParser(prog="aqflow", description="Unified CLI for Atlas–QE workflow")
     sub = parser.add_subparsers(dest="cmd")
 
-    p_srv = sub.add_parser("server", help="Start local task service and dashboard")
-    p_srv.add_argument("--host", default=DEFAULT_HOST)
-    p_srv.add_argument("--port", type=int, default=DEFAULT_PORT)
-    p_srv.add_argument("--foreground", action="store_true", help="Run in foreground (default: background)")
-    p_srv.set_defaults(func=cmd_server)
+    p_board = sub.add_parser("board", help="Show tasks board (running by default)")
+    p_board.add_argument("--all", action="store_true", help="Show all tasks, not only running")
+    p_board.set_defaults(func=cmd_board)
 
-    p_atlas = sub.add_parser("atlas", help="Run atlas in current directory via service")
+    p_atlas = sub.add_parser("atlas", help="Run atlas in current directory")
     p_atlas.add_argument("--resources", default="config/resources.yaml")
     p_atlas.set_defaults(func=lambda a: cmd_local(a, "atlas"))
 
-    p_qe = sub.add_parser("qe", help="Run qe in current directory via service")
+    p_qe = sub.add_parser("qe", help="Run qe in current directory")
     p_qe.add_argument("--resources", default="config/resources.yaml")
     p_qe.set_defaults(func=lambda a: cmd_local(a, "qe"))
 

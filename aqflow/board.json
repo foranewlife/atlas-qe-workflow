@@ -1,0 +1,29 @@
+{
+  "meta": {
+    "run_id": "eos_20250920-172131",
+    "root": "/Users/chenys/project/TB-OFDFT/phase2/soft/atlas-qe-workflow",
+    "resources_file": "/Users/chenys/project/TB-OFDFT/phase2/soft/atlas-qe-workflow/config/resources_test.yaml",
+    "tool": "eos",
+    "args": [
+      "aqflow",
+      "eos",
+      "/Users/chenys/project/TB-OFDFT/phase2/soft/atlas-qe-workflow/examples/test_qe_small/test_qe_small.yaml"
+    ],
+    "start_time": 1758360091.632427,
+    "last_update": 1758361101.203851
+  },
+  "tasks": {
+    "gaas_zincblende_qe_ecut60_gaas_lda_lpp_density_00": {
+      "id": "gaas_zincblende_qe_ecut60_gaas_lda_lpp_density_00",
+      "name": "qe gaas_zincblende 1.00000",
+      "type": "qe",
+      "workdir": "results/gaas_zincblende/qe_ecut60_gaas_lda_lpp_density/1.00000",
+      "status": "succeeded",
+      "resource": "local_echo",
+      "cmd": "/bin/echo -in qe.in > job.out 2>&1",
+      "start_time": 1758361100.995807,
+      "end_time": 1758361101.203847,
+      "exit_code": 0
+    }
+  }
+}

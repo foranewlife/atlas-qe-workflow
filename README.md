@@ -207,15 +207,14 @@ results/
 aqflow eos examples/gaas_eos_study/gaas_eos_study.yaml --dry-run
 
 # 2. 查询任务状态
-# 看板与状态（可选）
-aqflow server                                             # 启动本地看板服务
-# 浏览 http://127.0.0.1:8765/dashboard 查看任务状态
+# 终端看板（无常驻服务）
+aqflow board                                             # 默认仅显示运行中任务（聚合 ~/.aqflow/boards/*）
 
 # 3. 完整工作流执行（需要配置ATLAS/QE可执行文件路径）
 aqflow eos examples/gaas_eos_study/gaas_eos_study.yaml
 
 # 4. 导出结果
-# 结果位于 results/ 下；状态持久化 results/tasks_simple.json
+# 状态持久化：aqflow/board.json（工作目录）；集中查看：~/.aqflow/boards/
 ```
 
 ### 当前交付成果

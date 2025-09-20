@@ -21,8 +21,8 @@ from .configuration import (
 )
 import yaml
 from .task_creation import TaskCreator, TaskDef
-from .process_orchestrator import ProcessOrchestrator
 from .task_processing import RunResult
+from .state_machine import ensure_board, add_tasks, save_board, run as sm_run, BOARD_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -117,10 +117,31 @@ class EosController:
 
     # ---------- Execution ----------
     def execute(self, tasks: List[TaskDef]) -> List[RunResult]:
-        """Execute tasks using the single state-based scheduler (ResourcePool + Orchestrator)."""
-        orchestrator = ProcessOrchestrator(self.resources_file, self.results_base)
-        orchestrator.load_tasks(tasks)
-        orchestrator.run()
+        """Append tasks to board.json and run state machine until finish."""
+        # Prepare board and append tasks as queued
+        board = ensure_board(BOARD_PATH, meta={
+            "tool": "eos",
+            "args": ["aqflow", "eos", str(self.workflow_cfg_path)],
+            "resources_file": str(self.resources_file),
+            "root": str(Path.cwd()),
+        })
+        # Convert TaskDef -> dict entries
+        entries = []
+        for t in tasks:
+            entries.append({
+                "id": t.task_id,
+                "name": f"{t.software} {t.meta.get('structure','')} {t.meta.get('volume_scale','')}".strip(),
+                "type": t.software,
+                "workdir": str(t.work_dir),
+                "status": "queued",
+            })
+        add_tasks(board, entries)
+        save_board(BOARD_PATH, board)
+
+        # Run state machine
+        sm_run(self.resources_file, BOARD_PATH)
+
+        # Build results based on job.out presence
         results: List[RunResult] = []
         for t in tasks:
             job_out = t.work_dir / "job.out"
