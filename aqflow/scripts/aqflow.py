@@ -18,7 +18,7 @@ from pathlib import Path
 
 from aqflow.core.eos import EosController
 from aqflow.utils.logging_config import setup_logging
-from aqflow.core.executor import ensure_board, add_tasks, save_board, run as sm_run, BOARD_PATH, load_board, GLOBAL_HOME
+from aqflow.core.executor import Executor, BOARD_PATH, load_board, GLOBAL_HOME
 
 
 def submit_orchestrator(software: str, work_dir: Path, resources: Path) -> int:
@@ -34,7 +34,7 @@ def submit_orchestrator(software: str, work_dir: Path, resources: Path) -> int:
         return 1
     # Append task to board.json
     resources = Path(resources).resolve()
-    board = ensure_board(BOARD_PATH, meta={
+    ex = Executor(resources, board_path=BOARD_PATH, run_meta={
         "tool": software,
         "args": list(sys.argv),
         "resources_file": str(resources),
@@ -48,10 +48,9 @@ def submit_orchestrator(software: str, work_dir: Path, resources: Path) -> int:
         "workdir": str(work_dir),
         "status": "queued",
     }
-    add_tasks(board, [entry])
-    save_board(BOARD_PATH, board)
-    # Run state machine
-    sm_run(resources, BOARD_PATH)
+    ex.add_tasks([entry])
+    ex.save()
+    ex.run()
     rc = 0 if (work_dir / "job.out").exists() else 1
     print(f"submitted {task_id}, rc={rc}")
     return rc

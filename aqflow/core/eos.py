@@ -20,7 +20,7 @@ from .configuration import (
 )
 from .tasks import TaskCreator, TaskDef
 from .task_utils import RunResult
-from .executor import ensure_board, add_tasks, save_board, run as sm_run, BOARD_PATH
+from .executor import Executor, BOARD_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ class EosController:
     def execute(self, tasks: List[TaskDef]) -> List[RunResult]:
         """Append tasks to board.json and run state machine until finish."""
         # Prepare board and append tasks as queued
-        board = ensure_board(BOARD_PATH, meta={
+        ex = Executor(self.resources_file, board_path=BOARD_PATH, run_meta={
             "tool": "eos",
             "args": ["aqflow", "eos", str(self.workflow_cfg_path)],
             "resources_file": str(self.resources_file),
@@ -113,11 +113,9 @@ class EosController:
                 "workdir": str(t.work_dir),
                 "status": "queued",
             })
-        add_tasks(board, entries)
-        save_board(BOARD_PATH, board)
-
-        # Run state machine
-        sm_run(self.resources_file, BOARD_PATH)
+        ex.add_tasks(entries)
+        ex.save()
+        ex.run()
 
         # Build results based on job.out presence
         results: List[RunResult] = []
