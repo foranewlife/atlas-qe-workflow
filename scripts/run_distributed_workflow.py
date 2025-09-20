@@ -16,7 +16,7 @@ import logging
 import sys
 from typing import Optional
 
-from src.utils.logging_config import setup_logging
+from aqflow.utils.logging_config import setup_logging
 from aqflow.eos_controller import EosController  # via aqflow namespace
 
 logger = logging.getLogger("atlas-qe-workflow")

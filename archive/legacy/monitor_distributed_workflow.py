@@ -18,11 +18,11 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
-from src.core.configuration import ConfigurationManager
-from src.core.resource_manager import ResourceManager, LocalResource, RemoteResource
-from src.core.task_manager import TaskManager, TaskStatus
-from src.core.monitoring_system import MonitoringSystem
-from src.utils.logging_config import setup_logging
+from aqflow.core.configuration import ConfigurationManager
+from aqflow.core.resource_manager import ResourceManager, LocalResource, RemoteResource
+from aqflow.core.task_manager import TaskManager, TaskStatus
+from aqflow.core.monitoring_system import MonitoringSystem
+from aqflow.utils.logging_config import setup_logging
 
 import logging
 logger = logging.getLogger(__name__)

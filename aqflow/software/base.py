@@ -9,8 +9,8 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Dict, Tuple
 
-from src.core.configuration import StructureConfig, ParameterCombination, WorkflowConfiguration
-from src.core.template_engine import TemplateProcessor, StructureProcessor
+from aqflow.core.configuration import StructureConfig, ParameterCombination, WorkflowConfiguration
+from aqflow.core.template_engine import TemplateProcessor, StructureProcessor
 
 
 class SoftwareInputGenerator(ABC):

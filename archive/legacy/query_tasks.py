@@ -14,8 +14,8 @@ import argparse
 import json
 from pathlib import Path
 
-from src.core.task_manager import TaskManager, TaskStatus
-from src.utils.logging_config import setup_logging
+from aqflow.core.task_manager import TaskManager, TaskStatus
+from aqflow.utils.logging_config import setup_logging
 
 
 def main():

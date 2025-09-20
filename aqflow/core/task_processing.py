@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from .configuration import ResourceConfigurationLoader, ResourceConfig, ResourceType
-from src.software import get_runner
+from aqflow.software import get_runner
 from .task_creation import TaskDef
 
 

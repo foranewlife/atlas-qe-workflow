@@ -34,7 +34,7 @@ from typing import Dict, List, Optional, Tuple
 
 import yaml
 
-from src.software import get_runner
+from aqflow.software import get_runner
 from .task_creation import TaskDef
 
 

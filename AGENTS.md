@@ -1,8 +1,8 @@
 # Repository Guidelines
 
 ## Structure & Roles
-- Core: `src/core/` — `eos_controller.py` (build tasks), `process_orchestrator.py` (state-based scheduler), `resources_simple.py` (resource tools), `task_creation.py` (inputs), `task_processing.py` (proc utils)。
-- Software adapters: `src/software/` — `atlas.py`, `qe.py`（命令与输入生成）。
+- Core: `aqflow/core/` — `eos_controller.py` (build tasks), `process_orchestrator.py` (state-based scheduler), `resources_simple.py` (resource tools), `task_creation.py` (inputs), `task_processing.py` (proc utils)。
+- Software adapters: `aqflow/software/` — `atlas.py`, `qe.py`（命令与输入生成）。
 - CLI: `scripts/run_distributed_workflow.py`；旧代码在 `archive/legacy/`。
 - Config/Examples: `config/resources.yaml`, `examples/*`；Outputs: `results/`, Logs: `logs/`。
 
@@ -29,7 +29,7 @@
 
 ## Coding & Conventions
 - Python 3.11+；Black(88)，4 空格；类型标注优先；命名：`snake_case`/`CapWords`/`UPPER_CASE`。
-- 可执行放 `scripts/`，复用逻辑放 `src/`；不要把输出写到 repo 根。
+- 可执行放 `scripts/`，复用逻辑放 `aqflow/`；不要把输出写到 repo 根。
 
 ## Dev Tips
 - 远端失败定位：日志包含 `ssh/scp` rc 与命令；回收失败会打印错误；启用 `--log-level DEBUG` 查看详细命令。

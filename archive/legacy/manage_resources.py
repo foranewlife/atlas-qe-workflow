@@ -24,9 +24,9 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 
-from src.core.configuration import ConfigurationManager
-from src.core.resource_manager import ResourceManager, LocalResource, RemoteResource, ResourceType
-from src.utils.logging_config import setup_logging
+from aqflow.core.configuration import ConfigurationManager
+from aqflow.core.resource_manager import ResourceManager, LocalResource, RemoteResource, ResourceType
+from aqflow.utils.logging_config import setup_logging
 
 import logging
 logger = logging.getLogger(__name__)

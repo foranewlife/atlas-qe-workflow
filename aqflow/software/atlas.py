@@ -7,8 +7,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from .base import SoftwareInputGenerator, SoftwareRunner
-from src.core.configuration import StructureConfig, ParameterCombination, WorkflowConfiguration
-from src.core.template_engine import TemplateProcessor, StructureProcessor
+from aqflow.core.configuration import StructureConfig, ParameterCombination, WorkflowConfiguration
+from aqflow.core.template_engine import TemplateProcessor, StructureProcessor
 
 
 class AtlasInputGenerator(SoftwareInputGenerator):

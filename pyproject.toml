@@ -56,11 +56,7 @@ docs = [
 ]
 
 [project.scripts]
-atlas-qe-workflow = "src.scripts.full_materials_workflow:main"
-atlas-qe-convergence = "src.scripts.convergence_test_workflow:main"
-atlas-qe-optimize = "src.scripts.structure_optimization_workflow:main"
-atlas-qe-paramset = "src.scripts.parameter_set_workflow:main"
-atlas-qe-query = "src.scripts.parameter_set_query:main"
+aqflow = "scripts.aqflow:main"
 
 [project.urls]
 Homepage = "https://github.com/TB-OFDFT/atlas-qe-workflow"
@@ -70,10 +66,10 @@ Issues = "https://github.com/TB-OFDFT/atlas-qe-workflow/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["aqflow*"]
 
 [tool.setuptools.package-data]
-"src" = ["*.yaml", "*.yml", "*.json"]
+"aqflow" = ["*.yaml", "*.yml", "*.json"]
 
 [tool.black]
 line-length = 88
@@ -98,7 +94,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "--cov=src --cov-report=html --cov-report=term-missing"
+addopts = "--cov=aqflow --cov-report=html --cov-report=term-missing"
 
 [tool.mypy]
 python_version = "3.11"

@@ -19,7 +19,7 @@ from typing import Dict, List, Optional
 
 from .configuration import StructureConfig, ParameterCombination, WorkflowConfiguration
 from .template_engine import TemplateProcessor, StructureProcessor
-from src.software import get_input_generator
+from aqflow.software import get_input_generator
 
 
 @dataclass
