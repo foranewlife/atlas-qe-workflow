@@ -20,7 +20,7 @@ from .configuration import (
 )
 from .tasks import TaskCreator, TaskDef
 from .task_utils import RunResult
-from .state_machine import ensure_board, add_tasks, save_board, run as sm_run, BOARD_PATH
+from .executor import ensure_board, add_tasks, save_board, run as sm_run, BOARD_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -48,14 +48,14 @@ class EosController:
 
         # Templates
         for combo in self.config.parameter_combinations:
-            t = Path(combo.template_file)
+            t = Path(combo.template)
             if not t.is_absolute():
                 t = self.config_dir / t
             if not t.exists():
                 missing.append(f"template: {t}")
 
             # Pseudopotentials referenced by combo are checked per structure elements
-            pp_dir = self.config.data_paths.get("pseudopotentials_directory", "")
+            pp_dir = self.config.data_paths.get("pseudopotentials") or self.config.data_paths.get("pseudopotentials_directory", "")
             for struct_name in combo.applies_to_structures:
                 struct = next(s for s in self.config.structures if s.name == struct_name)
                 pp_set = self.config.pseudopotential_sets[combo.pseudopotential_set]

@@ -84,7 +84,7 @@ class TaskCreator:
         pp_set = self.config.pseudopotential_sets[combination.pseudopotential_set]
         for _, ppfile in pp_set.items():
             # Prefer example-relative path if exists
-            pp_src = self.config_dir / self.config.data_paths.get("pseudopotentials_directory", "") / ppfile
+            pp_src = self.config_dir / (self.config.data_paths.get("pseudopotentials") or self.config.data_paths.get("pseudopotentials_directory", "")) / ppfile
             if pp_src.exists():
                 dest = work_dir / ppfile
                 if not dest.exists():

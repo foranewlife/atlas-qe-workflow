@@ -61,25 +61,35 @@ class StructureConfig:
 
 @dataclass
 class ParameterCombination:
-    """Configuration for a parameter combination."""
+    """Configuration for a parameter combination.
+
+    Simplified naming: use 'template' instead of 'template_file'.
+    Backward compatible: loader accepts both keys.
+    """
     name: str
     software: str
-    template_file: str
+    template: str
     applies_to_structures: List[str]
     pseudopotential_set: str
     template_substitutions: Dict[str, Any]
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ParameterCombination':
-        """Create ParameterCombination from dictionary."""
+        """Create ParameterCombination from dictionary (accept legacy keys)."""
+        tpl = data.get('template') or data.get('template_file')
         return cls(
             name=data['name'],
             software=data['software'],
-            template_file=data['template_file'],
+            template=tpl,
             applies_to_structures=data['applies_to_structures'],
             pseudopotential_set=data['pseudopotential_set'],
             template_substitutions=data.get('template_substitutions', {})
         )
+
+    @property
+    def template_file(self) -> str:
+        """Backward compatibility alias of 'template'."""
+        return self.template
 
 
 @dataclass
@@ -175,12 +185,14 @@ class ConfigurationLoader:
                 if field not in structure:
                     raise ValueError(f"Structure {i}: missing required field '{field}'")
 
-        # Validate parameter combinations
+        # Validate parameter combinations (allow 'template' or legacy 'template_file')
         for i, combo in enumerate(config['parameter_combinations']):
-            required_combo_fields = ['name', 'software', 'template_file', 'applies_to_structures', 'pseudopotential_set']
+            required_combo_fields = ['name', 'software', 'applies_to_structures', 'pseudopotential_set']
             for field in required_combo_fields:
                 if field not in combo:
                     raise ValueError(f"Parameter combination {i}: missing required field '{field}'")
+            if 'template' not in combo and 'template_file' not in combo:
+                raise ValueError(f"Parameter combination {i}: missing required field 'template' (or legacy 'template_file')")
 
     def _validate_cross_references(self, config: WorkflowConfiguration) -> None:
         """Validate cross-references between configuration sections."""
@@ -627,7 +639,7 @@ class ConfigurationManager:
                         {
                             'name': c.name,
                             'software': c.software,
-                            'template_file': c.template_file,
+                            'template': c.template,
                             'applies_to_structures': c.applies_to_structures,
                             'pseudopotential_set': c.pseudopotential_set,
                             'template_substitutions': c.template_substitutions

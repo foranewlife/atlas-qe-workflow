@@ -39,4 +39,3 @@ class SoftwareRunner(ABC):
     def default_environment(self) -> Dict[str, str]:
         """Default environment variables for this software (override as needed)."""
         return {"OMP_NUM_THREADS": os.getenv("OMP_NUM_THREADS", "1")}
-

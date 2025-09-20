@@ -18,7 +18,7 @@ from pathlib import Path
 
 from aqflow.core.eos import EosController
 from aqflow.utils.logging_config import setup_logging
-from aqflow.core.state_machine import ensure_board, add_tasks, save_board, run as sm_run, BOARD_PATH, load_board, GLOBAL_HOME
+from aqflow.core.executor import ensure_board, add_tasks, save_board, run as sm_run, BOARD_PATH, load_board, GLOBAL_HOME
 
 
 def submit_orchestrator(software: str, work_dir: Path, resources: Path) -> int:
