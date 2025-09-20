@@ -1,45 +1,36 @@
 # Repository Guidelines
 
-## Project Structure & Modules
-- Source: `src/` (core logic in `src/core/`, calculators in `src/calculators/`, utilities in `src/utils/`, CLI in `src/scripts/`).
-- Scripts: `scripts/` operational tools (distributed runner, monitoring, queries).
-- Config & Examples: `config/` (e.g., `resources.yaml`), `examples/` sample workflows.
-- Data & Outputs: `data/`, `results/`, `logs/` (do not write to repo root).
-- Tests: `tests/` (pytest discovery enabled).
+## Structure & Roles
+- Core: `src/core/` — `eos_controller.py` (build tasks), `process_orchestrator.py` (state-based scheduler), `resources_simple.py` (resource tools), `task_creation.py` (inputs), `task_processing.py` (proc utils)。
+- Software adapters: `src/software/` — `atlas.py`, `qe.py`（命令与输入生成）。
+- CLI: `scripts/run_distributed_workflow.py`；旧代码在 `archive/legacy/`。
+- Config/Examples: `config/resources.yaml`, `examples/*`；Outputs: `results/`, Logs: `logs/`。
 
-## Build, Test, and Development
-- Environment
-  - python -m venv .venv && source .venv/bin/activate
-  - pip install -e .[dev]
-- Run workflows
-  - atlas-qe-workflow eos examples/gaas_eos_study/gaas_eos_study.yaml
-  - python scripts/run_distributed_workflow.py examples/gaas_eos_study/gaas_eos_study.yaml
-- Tests & coverage
-  - pytest -q
-  - pytest --cov=src --cov-report=term-missing
-- Lint/format/type-check
-  - black .
-  - flake8 src tests
-  - mypy src
+## Run & Logs
+- Minimal run（建议加超时防卡）：
+  - `timeout 60s python -u scripts/run_distributed_workflow.py examples/test_qe_small/test_qe_small.yaml --log-level INFO`
+- 状态持久化：`results/tasks_simple.json`；失败会打印 `job.out` 尾部（最多 2000 字）。
 
-## Coding Style & Conventions
-- Python 3.11+, Black formatting (line length 88), 4‑space indent.
-- Type hints required for public functions (`mypy` strict-ish); prefer explicit return types.
-- Naming: modules/functions `snake_case`, classes `CapWords`, constants `UPPER_CASE`.
-- File placement: new executables in `scripts/`; reusable logic in `src/` packages; no generated files in project root.
+## Task Service（看板 + 本地运行）
+- 启动服务（提供看板和本地运行 API）
+  - `python scripts/atlas_cli.py serve [PORT]`（默认 8765）
+- 在当前目录运行 atlas（自动启动服务如未运行）
+  - `python scripts/atlas_cli.py atlas`（以 PWD 为工作目录，读取 `config/resources.yaml` 的本地 atlas 路径）
+- 看板
+  - 浏览器打开 `http://127.0.0.1:8765/dashboard`（每 2 秒自动刷新）
 
-## Testing Guidelines
-- Framework: `pytest` (configured in `pyproject.toml`).
-- Discovery: files `tests/test_*.py`, classes `Test*`, functions `test_*`.
-- Add tests with each new module/bugfix; aim for meaningful coverage (HTML report via `--cov-report=html`).
-- Prefer small, deterministic tests; use example configs under `examples/` when needed.
+## Resource & Scheduler Config（config/resources.yaml）
+- resources: 每资源配置
+  - `name`, `type: local|remote`, `cores`（总容量），远端含 `host`, `user`, `workdir`
+  - `software.<sw>`: `path`, `cores`（单任务核数），`mpi`，`env`（OMP 等）
+  - 可选 `transfer.pull_all: true` 回传远端任务目录全部文件
+- scheduler: `max_parallel`, `poll_interval`；timeouts: `default`（软超时秒）；policy: `prefer.atlas: local`, `prefer.qe_multicore: remote`
+- 核心使用位置：在对应资源的 `software.<sw>.cores` 设置（QE >1 自动走 MPI）。
 
-## Commit & PR Guidelines
-- Commits: imperative subject (<= 72 chars), concise body with rationale when non-trivial.
-- Scope changes narrowly; keep code, tests, and docs together.
-- PRs: clear description, what/why, testing notes, and any config updates (e.g., `config/resources.yaml`). Link issues if applicable. Include sample command to reproduce.
-- All checks pass locally: format, lint, type-check, tests.
+## Coding & Conventions
+- Python 3.11+；Black(88)，4 空格；类型标注优先；命名：`snake_case`/`CapWords`/`UPPER_CASE`。
+- 可执行放 `scripts/`，复用逻辑放 `src/`；不要把输出写到 repo 根。
 
-## Configuration & Security Tips
-- Update `config/resources.yaml` with local/remote paths for ATLAS/QE binaries and resource limits; do not hardcode secrets.
-- Outputs should go under `results/` and `logs/`; avoid committing large artifacts. Add new patterns to `.gitignore` as needed.
+## Dev Tips
+- 远端失败定位：日志包含 `ssh/scp` rc 与命令；回收失败会打印错误；启用 `--log-level DEBUG` 查看详细命令。
+- 常用目录：QE/ATLAS 输出默认回收 `job.out`；如需全量回收，在资源下开启 `transfer.pull_all`。
