@@ -1,144 +1,56 @@
-# Computational Resources Configuration
-# Defines available local and remote computational resources
+# 简化版资源配置（按资源填写），先定好格式再调整代码适配
+# 目标：每个资源清晰列出总核数、每个软件的二进制路径与使用核心数、可选环境变量/MPI 命令
 
-local_resources:
-  local_workstation:
-    name: "local_workstation"
-    capability:
-      cores: 4
-      memory_gb: 16
-      supports_mpi: true
-      max_concurrent_jobs: 2
-      preferred_software: ["atlas", "qe"]
+resources:
+  - name: local_workstation
+    type: local
+    cores: 8                     # 资源最大核心数（用于容量/并发控制）
+    software:
+      atlas:
+        path: "/Users/chenys/project/TB-OFDFT/phase2/soft/atlas_gcc/src/atlas_mpi.x"
+        cores: 1                 # 单个任务为 ATLAS 分配的核心数
+        env:
+          OMP_NUM_THREADS: "1"
+      qe:
+        path: "/Users/chenys/project/TB-OFDFT/phase2/soft/q-e-qe-7.3.1/build/bin/pw.x"
+        cores: 1                 # 单个任务为 QE 分配的核心数（>1 则启用 MPI）
+        mpi: "mpirun"            # 可选：MPI 命令
+        env:
+          OMP_NUM_THREADS: "1"
 
-    software_paths:
-      atlas: "/Users/chenys/project/TB-OFDFT/phase2/soft/atlas_gcc/src/atlas_mpi.x"
-      qe: "/Users/chenys/project/TB-OFDFT/phase2/soft/q-e-qe-7.3.1/build/bin/pw.x"
+  - name: server_6101
+    type: remote
+    host: "6101"
+    user: "chenys"
+    workdir: "~/atlas_qe_jobs"
+    transfer:
+      pull_all: true
+    cores: 72
+    software:
+      atlas:
+        path: "/home/chenys/soft/atlas_gcc/src/atlas_mpi.x"
+        cores: 1
+        env:
+          OMP_NUM_THREADS: "1"
+      qe:
+        path: "/home/chenys/soft/q-e-qe-7.3.1/build/bin/pw.x"
+        cores: 4
+        mpi: "mpirun"
+        env:
+          OMP_NUM_THREADS: "1"
 
-    # Local-specific settings
-    monitoring:
-      update_interval: 30  # seconds
-      cpu_threshold: 90    # percent
-      memory_threshold: 95 # percent
+# 全局调度与监控（最小必要项）
+scheduler:
+  max_parallel: 2               # 同时运行的任务数量上限（全局）
+  poll_interval: 2              # 轮询间隔（秒）
 
-remote_resources:
-  server_6101:
-    name: "server_6101"
-    hostname: "6101"
-    username: "chenys"  # Can be overridden by environment
+timeouts:
+  default: 220                   # 软超时（秒），用于非阻塞轮询
+  atlas: 1800                   # 可选：阻塞路径或软件特定超时
+  qe: 7200
 
-    capability:
-      cores: 72
-      memory_gb: 128
-      supports_mpi: true
-      max_concurrent_jobs: 16
-      preferred_software: ["qe", "atlas"]
-
-    software_paths:
-      qe: "/home/chenys/soft/q-e-qe-7.3.1/build/bin/pw.x"
-      atlas: "/home/chenys/soft/atlas_gcc/src/atlas_mpi.x"
-
-    # Remote-specific settings
-    connection:
-      ssh_key: null  # Use default SSH key
-      remote_work_dir: "~/atlas_qe_jobs"
-      connection_timeout: 15
-      transfer_timeout: 120
-
-    monitoring:
-      update_interval: 60  # seconds
-      load_threshold: 0.9  # load average / cores
-
-# Global resource management settings
-resource_management:
-  # Task allocation strategy
-  allocation_strategy:
-    # Prefer local for ATLAS (single core)
-    atlas_prefer_local: true
-
-    # Prefer remote for QE with multiple cores
-    qe_multicore_prefer_remote: true
-
-    # Load balancing weights
-    load_balance_weights:
-      cpu_usage: 0.4
-      memory_usage: 0.2
-      active_jobs: 0.4
-
-  # Monitoring settings
-  monitoring:
-    global_update_interval: 30  # seconds
-    health_check_interval: 300  # seconds
-    retry_failed_resources: true
-    max_retry_attempts: 3
-
-  # Job execution settings
-  execution:
-    default_timeout: 3600  # seconds (1 hour)
-    atlas_timeout: 1800    # seconds (30 minutes)
-    qe_timeout: 7200       # seconds (2 hours)
-
-    # Retry settings
-    max_retries: 2
-    retry_delay: 60        # seconds
-
-    # File transfer settings
-    transfer_chunk_size: "10MB"
-    compress_transfers: true
-
-# Software-specific configurations
-software_configs:
-  atlas:
-    execution:
-      environment_vars:
-        OMP_NUM_THREADS: "1"
-
-      # Expected input/output files
-      input_files: ["atlas.in", "POSCAR"]
-      output_files: ["atlas.out", "DENSFILE"]
-
-      # Convergence checking
-      convergence_patterns:
-        - "SCF Converged"
-        - "Total Energy"
-
-      error_patterns:
-        - "FATAL ERROR"
-        - "Memory allocation failed"
-        - "Maximum SCF iterations exceeded"
-
-  qe:
-    execution:
-      # MPI configuration
-      mpi_command: "mpirun"
-      environment_vars:
-        OMP_NUM_THREADS: "1"
-
-      # Expected input/output files
-      input_files: ["job.in", "*.UPF"]
-      output_files: ["job.out"]
-
-      # Convergence checking
-      convergence_patterns:
-        - "JOB DONE"
-        - "convergence has been achieved"
-        - "End of self-consistent calculation"
-
-      error_patterns:
-        - "Error in routine"
-        - "stopping ..."
-        - "%%%%%%"
-
-# Logging configuration
-logging:
-  resource_manager:
-    level: "INFO"
-    log_file: "logs/resource_manager.log"
-    max_size: "10MB"
-    backup_count: 5
-
-  job_execution:
-    level: "DEBUG"
-    log_file: "logs/job_execution.log"
-    max_size: "50MB"
-    backup_count: 10
+# 简单策略（可选）：多核 QE 优先远端、ATLAS 优先本地
+policy:
+  prefer:
+    atlas: local
+    qe_multicore: remote

@@ -1,0 +1,43 @@
+&CONTROL
+   calculation      = 'scf',
+   verbosity        = 'high',
+   restart_mode     = 'from_scratch',
+   tstress          = .t.,
+   tprnfor          = .t.
+   outdir           = './',
+   prefix           = 'C',
+   etot_conv_thr    = 1.0d-6
+   forc_conv_thr    = 1.0d-5
+   disk_io          = 'nowf',
+   pseudo_dir       = '.'
+/
+&SYSTEM
+   ibrav            = 0
+   nat              = 8
+   ntyp             = 2
+   ecutwfc          = 60
+   ecutrho          = 240
+   occupations      = 'smearing'
+   degauss          = 0.01
+   smearing         = 'mp'
+   input_dft        = 'pz',
+/
+&ELECTRONS
+   electron_maxstep = 500
+   conv_thr         = 1.0d-7
+   mixing_mode      = 'local-TF'
+   mixing_beta      = 0.2
+/
+&IONS
+/
+&CELL
+/
+&FCP
+/
+&RISM
+/
+K_POINTS automatic
+ 1 1 1 0 0 0
+
+
+# CELL_PARAMETERS和ATOMIC_POSITIONS将由软件基于POSCAR自动生成

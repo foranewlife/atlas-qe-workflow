@@ -13,7 +13,21 @@ from typing import Dict, List, Any, Tuple, Optional, Union
 from dataclasses import dataclass, field
 import numpy as np
 
-from .resource_manager import ResourceCapability, ResourceType
+from enum import Enum
+
+# Minimal internal definitions to avoid depending on legacy resource_manager
+@dataclass
+class ResourceCapability:
+    cores: int
+    memory_gb: int | None = None
+    supports_mpi: bool = True
+    max_concurrent_jobs: int = 1
+    preferred_software: List[str] = field(default_factory=list)
+
+
+class ResourceType(Enum):
+    LOCAL = "local"
+    REMOTE = "remote"
 
 logger = logging.getLogger(__name__)
 

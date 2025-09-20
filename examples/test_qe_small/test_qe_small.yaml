@@ -1,0 +1,27 @@
+system: "test_qe_small"
+description: "Small QE test"
+
+pseudopotential_sets:
+  gaas_lda_lpp_density:
+    Ga: "ga.lda.lpp.lpp_density.UPF"
+    As: "as.lda.lpp.lpp_density.UPF"
+
+structures:
+  - name: "gaas_zincblende"
+    elements: ["Ga", "As"]
+    file: "POSCAR"
+    description: "GaAs zincblende"
+    volume_range: [1.00, 1.00]
+    volume_points: 1
+
+parameter_combinations:
+  - name: "qe_ecut60_gaas_lda_lpp_density"
+    software: "qe"
+    template_file: "job.in.template"
+    applies_to_structures: ["gaas_zincblende"]
+    pseudopotential_set: "gaas_lda_lpp_density"
+    template_substitutions: {}
+
+data_paths:
+  base_directory: "results"
+  pseudopotentials_directory: "."
