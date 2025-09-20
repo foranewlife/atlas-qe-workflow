@@ -17,11 +17,11 @@ structures:
 parameter_combinations:
   - name: "qe_ecut60_gaas_lda_lpp_density"
     software: "qe"
-    template_file: "job.in.template"
+    template: "job.in.template"
     applies_to_structures: ["gaas_zincblende"]
     pseudopotential_set: "gaas_lda_lpp_density"
     template_substitutions: {}
 
 data_paths:
   base_directory: "results"
-  pseudopotentials_directory: "."
+  pseudopotentials: "."

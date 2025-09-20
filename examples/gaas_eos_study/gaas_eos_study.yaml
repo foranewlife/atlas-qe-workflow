@@ -45,7 +45,7 @@ parameter_combinations:
   # ATLAS 计算组合
   - name: "atlas_kedf701_gaas_lda_lpp_density"
     software: "atlas"
-    template_file: "atlas.in.template"
+    template: "atlas.in.template"
     applies_to_structures: ["gaas_zincblende", "gaas_wurtzite"]
     pseudopotential_set: "gaas_lda_lpp_density"
     template_substitutions:
@@ -53,7 +53,7 @@ parameter_combinations:
 
   - name: "atlas_kedf801_gaas_lda_lpp_density"
     software: "atlas"
-    template_file: "atlas.in.template"
+    template: "atlas.in.template"
     applies_to_structures: ["gaas_zincblende", "gaas_wurtzite"]
     pseudopotential_set: "gaas_lda_lpp_density"
     template_substitutions:
@@ -61,7 +61,7 @@ parameter_combinations:
 
   - name: "atlas_kedf701_gaas_lda_nlpp"
     software: "atlas"
-    template_file: "atlas.in.template"
+    template: "atlas.in.template"
     applies_to_structures: ["gaas_zincblende"]
     pseudopotential_set: "gaas_lda_nlpp"
     template_substitutions:
@@ -69,7 +69,7 @@ parameter_combinations:
 
   - name: "atlas_kedf801_mg_lda"
     software: "atlas"
-    template_file: "atlas.in.template"
+    template: "atlas.in.template"
     applies_to_structures: ["mg_fcc"]
     pseudopotential_set: "mg_lda"
     template_substitutions:
@@ -78,14 +78,14 @@ parameter_combinations:
   # QE 计算组合
   - name: "qe_ecut60_gaas_lda_lpp_density"
     software: "qe"
-    template_file: "job.in.template"
+    template: "job.in.template"
     applies_to_structures: ["gaas_zincblende", "gaas_wurtzite"]
     pseudopotential_set: "gaas_lda_lpp_density"
     template_substitutions: {}
 
   - name: "qe_ecut60_mg_lda"
     software: "qe"
-    template_file: "job.in.template"
+    template: "job.in.template"
     applies_to_structures: ["mg_fcc"]
     pseudopotential_set: "mg_lda"
     template_substitutions: {}

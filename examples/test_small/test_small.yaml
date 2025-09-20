@@ -20,7 +20,7 @@ structures:
 parameter_combinations:
   - name: "atlas_kedf701_gaas_lda_lpp_density"
     software: "atlas"
-    template_file: "atlas.in.template"
+    template: "atlas.in.template"
     applies_to_structures: ["gaas_zincblende"]
     pseudopotential_set: "gaas_lda_lpp_density"
     template_substitutions:
@@ -30,5 +30,5 @@ parameter_combinations:
 data_paths:
   base_directory: "results"
   templates_directory: "templates"
-  pseudopotentials_directory: "data/pseudopotentials"
+  pseudopotentials: "data/pseudopotentials"
   structures_directory: "data/structures"
