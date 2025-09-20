@@ -11,13 +11,9 @@
   - `timeout 60s aqflow eos examples/test_qe_small/test_qe_small.yaml`
 - 状态持久化：`results/tasks_simple.json`；失败会打印 `job.out` 尾部（最多 2000 字）。
 
-## Task Service（看板 + 本地运行）
-- 启动服务（提供看板和本地运行 API）
-  - `aqflow server [--host 127.0.0.1 --port 8765]`
-- 在当前目录运行 atlas/qe（自动启动服务如未运行）
-  - `aqflow atlas` 或 `aqflow qe`
-- 看板
-  - 浏览器打开 `http://127.0.0.1:8765/dashboard`（每 2 秒自动刷新）
+## Task Service（看板）与本地提交
+- 看板服务：`aqflow server [--host 127.0.0.1 --port 8765]`，浏览 `http://127.0.0.1:8765/dashboard`
+- 直接将当前目录提交给调度器：`aqflow atlas` 或 `aqflow qe`（读取 `config/resources.yaml`，不走本地服务）
 
 ## Resource & Scheduler Config（config/resources.yaml）
 - resources: 每资源配置
