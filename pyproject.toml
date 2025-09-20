@@ -56,7 +56,7 @@ docs = [
 ]
 
 [project.scripts]
-aqflow = "scripts.aqflow:main"
+aqflow = "aqflow.scripts.aqflow:main"
 
 [project.urls]
 Homepage = "https://github.com/TB-OFDFT/atlas-qe-workflow"

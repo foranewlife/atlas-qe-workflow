@@ -3,19 +3,19 @@
 ## Structure & Roles
 - Core: `aqflow/core/` — `eos_controller.py` (build tasks), `process_orchestrator.py` (state-based scheduler), `resources_simple.py` (resource tools), `task_creation.py` (inputs), `task_processing.py` (proc utils)。
 - Software adapters: `aqflow/software/` — `atlas.py`, `qe.py`（命令与输入生成）。
-- CLI: `scripts/run_distributed_workflow.py`；旧代码在 `archive/legacy/`。
+- CLI: `aqflow`（统一入口）；旧代码在 `archive/legacy/`。
 - Config/Examples: `config/resources.yaml`, `examples/*`；Outputs: `results/`, Logs: `logs/`。
 
 ## Run & Logs
 - Minimal run（建议加超时防卡）：
-  - `timeout 60s python -u scripts/run_distributed_workflow.py examples/test_qe_small/test_qe_small.yaml --log-level INFO`
+  - `timeout 60s aqflow eos examples/test_qe_small/test_qe_small.yaml`
 - 状态持久化：`results/tasks_simple.json`；失败会打印 `job.out` 尾部（最多 2000 字）。
 
 ## Task Service（看板 + 本地运行）
 - 启动服务（提供看板和本地运行 API）
-  - `python scripts/atlas_cli.py serve [PORT]`（默认 8765）
-- 在当前目录运行 atlas（自动启动服务如未运行）
-  - `python scripts/atlas_cli.py atlas`（以 PWD 为工作目录，读取 `config/resources.yaml` 的本地 atlas 路径）
+  - `aqflow server [--host 127.0.0.1 --port 8765]`
+- 在当前目录运行 atlas/qe（自动启动服务如未运行）
+  - `aqflow atlas` 或 `aqflow qe`
 - 看板
   - 浏览器打开 `http://127.0.0.1:8765/dashboard`（每 2 秒自动刷新）
 
