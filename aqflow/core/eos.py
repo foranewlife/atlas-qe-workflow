@@ -17,9 +17,7 @@ from .configuration import (
     ConfigurationLoader,
     ParameterSpaceEnumerator,
     WorkflowConfiguration,
-    ResourceConfigurationLoader,
 )
-import yaml
 from .tasks import TaskCreator, TaskDef
 from .task_utils import RunResult
 from .state_machine import ensure_board, add_tasks, save_board, run as sm_run, BOARD_PATH
@@ -35,26 +33,6 @@ class EosController:
 
         loader = ConfigurationLoader(self.workflow_cfg_path)
         self.config: WorkflowConfiguration = loader.load_configuration()
-
-        # Load distributed/resource settings for scheduling and timeouts
-        self.simple_resources = None
-        self.distributed_config = None
-        # Try simplified config first
-        try:
-            data = yaml.safe_load(Path(self.resources_file).read_text())
-            if isinstance(data, dict) and (('resources' in data) or ('software_paths' in data) or ('local_resources' in data) or ('remote_resources' in data)):
-                self.simple_resources = data
-            else:
-                # Fall back to legacy loader
-                r_loader = ResourceConfigurationLoader(self.resources_file)
-                _, self.distributed_config = r_loader.load_resource_configuration()
-        except Exception:
-            # Fall back to legacy loader on any error
-            try:
-                r_loader = ResourceConfigurationLoader(self.resources_file)
-                _, self.distributed_config = r_loader.load_resource_configuration()
-            except Exception:
-                self.distributed_config = None
 
         # Resolve results directory
         results_base = Path(self.config.data_paths.get("base_directory", "results"))

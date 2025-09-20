@@ -1,31 +1,24 @@
 #!/usr/bin/env python3
 """
-aqflow: Unified CLI for Atlas–QE workflow
+aqflow: Minimal CLI for ATLAS/QE workflow
 
-Subcommands:
-  aqflow board                         Show a lightweight tasks board (no server)
-  aqflow atlas                         Run atlas in current directory
-  aqflow qe                            Run qe in current directory
-  aqflow eos <config.yaml>             Run EOS workflow using unified orchestrator
+Commands:
+  aqflow board     # show lightweight tasks board (no server)
+  aqflow atlas     # run atlas in current directory
+  aqflow qe        # run qe in current directory
+  aqflow eos CFG   # run EOS workflow from config
 """
 from __future__ import annotations
 
 import argparse
-import json
 import os
-import subprocess
 import sys
 import time
 from pathlib import Path
-from urllib.request import Request, urlopen
 
 from aqflow.core.eos import EosController
 from aqflow.utils.logging_config import setup_logging
 from aqflow.core.state_machine import ensure_board, add_tasks, save_board, run as sm_run, BOARD_PATH, load_board, GLOBAL_HOME
-
-
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8765
 
 
 def submit_orchestrator(software: str, work_dir: Path, resources: Path) -> int:
