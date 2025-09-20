@@ -41,6 +41,7 @@ def submit_orchestrator(software: str, work_dir: Path, resources: Path) -> int:
         print(f"Input file not found: {inp}")
         return 1
     # Append task to board.json
+    resources = Path(resources).resolve()
     board = ensure_board(BOARD_PATH, meta={
         "tool": software,
         "args": list(sys.argv),
