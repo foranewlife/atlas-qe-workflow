@@ -19,9 +19,23 @@ from pathlib import Path
 from aqflow.core.eos import EosController
 from aqflow.utils.logging_config import setup_logging
 from aqflow.core.executor import Executor, BOARD_PATH, load_board, GLOBAL_HOME
+import yaml
 
 
-def submit_orchestrator(software: str, work_dir: Path, resources: Path) -> int:
+def _ensure_dep(module: str, package: str) -> None:
+    """Ensure a dependency exists; if missing, try to install via 'uv pip install'.
+
+    Only used in CLI edge paths (e.g., optional yaml for board rendering).
+    """
+    try:
+        __import__(module)
+    except ImportError:
+        # Best-effort install; ignore failures to keep CLI functional
+        from subprocess import run
+        run(["uv", "pip", "install", package], check=False)
+
+
+def submit_task(software: str, work_dir: Path, resources: Path) -> int:
     """Submit current directory as a single task to the state machine."""
     work_dir = work_dir.resolve()
     # Detect input file
@@ -72,59 +86,94 @@ def cmd_board(args: argparse.Namespace) -> int:
 
     # Group by root, show only running by default (unless --all)
     show_all = getattr(args, "all", False)
+    group_by = getattr(args, "group_by", None)
+    filters = getattr(args, "filter", []) or []
+
+    def match_filters(t: dict) -> bool:
+        if not filters:
+            return True
+        for f in filters:
+            if ":" not in f:
+                # substring on name if no key provided
+                if f.lower() not in (t.get("name", "").lower()):
+                    return False
+                continue
+            k, v = f.split(":", 1)
+            v = v.strip().lower()
+            if k == "status" and (t.get("status", "").lower() != v):
+                return False
+            if k == "type" and (t.get("type", "").lower() != v):
+                return False
+            if k == "resource" and (str(t.get("resource", "")).lower() != v):
+                return False
+            if k == "name" and (v not in (t.get("name", "").lower())):
+                return False
+        return True
+
     for root, data in items:
         tasks = list((data.get("tasks") or {}).values())
-        # Try load resources.yaml for quick ssh tail when remote
+        # Load resources for quick ssh tail (best-effort)
         resmap = {}
-        try:
-            import yaml  # noqa: F401
-            rpath = (data.get("meta") or {}).get("resources_file")
-            if rpath and Path(rpath).exists():
+        rpath = (data.get("meta") or {}).get("resources_file")
+        if rpath and Path(rpath).exists():
+            try:
                 rdata = yaml.safe_load(Path(rpath).read_text()) or {}
                 for r in (rdata.get("resources") or []):
                     name = r.get("name")
                     if name:
                         resmap[name] = r
-        except Exception:
-            resmap = {}
+            except Exception:
+                resmap = {}
         if not show_all:
             tasks = [t for t in tasks if t.get("status") == "running"]
+        tasks = [t for t in tasks if match_filters(t)]
         if not tasks:
             continue
+
+        # Group within root if requested
+        groups = {None: tasks}
+        if group_by in ("resource", "type"):
+            groups = {}
+            for t in tasks:
+                key = t.get(group_by) or "-"
+                groups.setdefault(key, []).append(t)
+
         print(f"root={root}")
-        # Header
-        print("task_id  name                 type   status   elapsed  quick")
         def fmt_elapsed(sec: int) -> str:
             h = sec // 3600; m = (sec % 3600) // 60; s = sec % 60
             return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
-        for t in tasks:
-            tid = t.get("id", "-")
-            name = (t.get("name") or "-")[:20].ljust(20)
-            typ = (t.get("type") or "-").ljust(6)
-            st = (t.get("status") or "-").ljust(8)
-            # elapsed
-            start = t.get("start_time") or 0
-            end = t.get("end_time") or None
-            now = time.time()
-            sec = int((end or now) - start) if start else 0
-            elapsed = fmt_elapsed(sec)
-            quick = f"cd {t.get('workdir', '.')}; tail -n 200 job.out"
-            rname = t.get("resource")
-            res = resmap.get(rname) if rname else None
-            if res and res.get("type") == "remote":
-                host = (res.get("user") + "@" if res.get("user") else "") + (res.get("host") or "")
-                base = res.get("workdir")
-                if host and base:
-                    quick = f"ssh {host} 'tail -n 200 {base.rstrip('/')}/{t.get('id','')}/job.out'"
-            print(f"{tid:7s} {name} {typ} {st} {elapsed:7s} {quick}")
-        print()
+        for gk, gtasks in groups.items():
+            if gk is not None:
+                print(f"[{group_by}={gk}]")
+            print("task_id  name                 type   status   elapsed  quick")
+            for t in gtasks:
+                tid = t.get("id", "-")
+                name = (t.get("name") or "-")[:20].ljust(20)
+                typ = (t.get("type") or "-").ljust(6)
+                st = (t.get("status") or "-").ljust(8)
+                # elapsed
+                start = t.get("start_time") or 0
+                end = t.get("end_time") or None
+                now = time.time()
+                sec = int((end or now) - start) if start else 0
+                elapsed = fmt_elapsed(sec)
+                quick = f"cd {t.get('workdir', '.')}; tail -n 200 job.out"
+                rname = t.get("resource")
+                res = resmap.get(rname) if rname else None
+                if res and res.get("type") == "remote":
+                    host = (res.get("user") + "@" if res.get("user") else "") + (res.get("host") or "")
+                    base = res.get("workdir")
+                    if host and base:
+                        quick = f"ssh {host} 'tail -n 200 {base.rstrip('/')}/{t.get('id','')}/job.out'"
+                print(f"{tid:7s} {name} {typ} {st} {elapsed:7s} {quick}")
+            print()
     return 0
 
 
 def cmd_local(args: argparse.Namespace, software: str) -> int:
     # Submit current directory to orchestrator (not the local service)
-    return submit_orchestrator(software, Path(os.getcwd()), Path(args.resources))
+    return submit_task(software, Path(os.getcwd()), Path(args.resources))
 
 
 def cmd_eos(args: argparse.Namespace) -> int:
@@ -147,11 +196,13 @@ def cmd_eos(args: argparse.Namespace) -> int:
 
 
 def main():
-    parser = argparse.ArgumentParser(prog="aqflow", description="Unified CLI for Atlas–QE workflow")
+    parser = argparse.ArgumentParser(prog="aqflow", description="Minimal CLI for ATLAS/QE workflow")
     sub = parser.add_subparsers(dest="cmd")
 
     p_board = sub.add_parser("board", help="Show tasks board (running by default)")
     p_board.add_argument("--all", action="store_true", help="Show all tasks, not only running")
+    p_board.add_argument("--filter", action="append", help="Filter tasks: key:value (status/type/resource/name) or plain substring on name; can repeat")
+    p_board.add_argument("--group-by", choices=["resource", "type"], help="Group tasks within each root by resource or type")
     p_board.set_defaults(func=cmd_board)
 
     p_atlas = sub.add_parser("atlas", help="Run atlas in current directory")

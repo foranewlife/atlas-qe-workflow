@@ -1,12 +1,13 @@
 """
 Software-specific adapters (Atlas, QE).
 
-Provides factories to obtain input generators and runners for each software.
+Provides factories to obtain input generators for each software.
+Execution is handled by aqflow.core.executor.
 """
 
-from .base import SoftwareInputGenerator, SoftwareRunner
-from .atlas import AtlasInputGenerator, AtlasRunner
-from .qe import QEInputGenerator, QERunner
+from .base import SoftwareInputGenerator
+from .atlas import AtlasInputGenerator
+from .qe import QEInputGenerator
 
 
 def get_input_generator(software: str) -> SoftwareInputGenerator:
@@ -18,11 +19,9 @@ def get_input_generator(software: str) -> SoftwareInputGenerator:
     raise ValueError(f"Unsupported software: {software}")
 
 
-def get_runner(software: str) -> SoftwareRunner:
-    s = software.lower()
-    if s == "atlas":
-        return AtlasRunner()
-    if s == "qe":
-        return QERunner()
-    raise ValueError(f"Unsupported software: {software}")
-
+__all__ = [
+    "SoftwareInputGenerator",
+    "AtlasInputGenerator",
+    "QEInputGenerator",
+    "get_input_generator",
+]

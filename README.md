@@ -223,21 +223,19 @@ results/
 - ~~缺少软件执行的进程管理和错误处理~~ ✅ 已实现
 - ~~配置系统需扩展支持软件路径和执行参数~~ ✅ 框架已建立
 
-### 使用示例
+### 使用示例（Quick Start）
 
 ```bash
-# 1. 干运行模式：仅生成输入文件（不执行）
-aqflow eos examples/gaas_eos_study/gaas_eos_study.yaml --dry-run
+# 1) 运行 EOS 示例（读取 config/resources.yaml 软件路径）
+aqflow eos examples/test_qe_small/test_qe_small.yaml
 
-# 2. 查询任务状态
-# 终端看板（无常驻服务）
-aqflow board                                             # 默认仅显示运行中任务（聚合 ~/.aqflow/boards/*）
+# 2) 在 atlas/qe 目录下直接提交单任务
+aqflow atlas   # 或 aqflow qe
 
-# 3. 完整工作流执行（需要配置ATLAS/QE可执行文件路径）
-aqflow eos examples/gaas_eos_study/gaas_eos_study.yaml
-
-# 4. 导出结果
-# 状态持久化：aqflow/board.json（工作目录）；集中查看：~/.aqflow/boards/
+# 3) 查询任务状态（默认仅显示 running）
+aqflow board
+# 可选：过滤/分组
+# aqflow board --filter status:failed --group-by resource
 ```
 
 ### 当前交付成果

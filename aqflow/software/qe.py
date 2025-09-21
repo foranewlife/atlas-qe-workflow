@@ -1,5 +1,5 @@
 """
-QE software adapter: input generation and command construction.
+QE software adapter: input generation.
 """
 
 from __future__ import annotations
@@ -7,7 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List
 
-from .base import SoftwareInputGenerator, SoftwareRunner
+from .base import SoftwareInputGenerator
 from aqflow.core.configuration import StructureConfig, ParameterCombination, WorkflowConfiguration
 from aqflow.core.template_engine import TemplateProcessor, StructureProcessor
 
@@ -95,7 +95,4 @@ class QEInputGenerator(SoftwareInputGenerator):
         return input_content + "\n" + "\n".join(cell) + "\n" + "\n".join(apos) + "\n"
 
 
-class QERunner(SoftwareRunner):
-    def build_command(self, binary_path: str, input_filename: str) -> str:
-        # QE prefers '-in file'
-        return f"{binary_path} -in {input_filename} > job.out 2>&1"
+# Execution is handled by aqflow.core.executor

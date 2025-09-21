@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict
 
 from aqflow.core.configuration import StructureConfig, ParameterCombination, WorkflowConfiguration
 from aqflow.core.template_engine import TemplateProcessor, StructureProcessor
@@ -30,12 +30,4 @@ class SoftwareInputGenerator(ABC):
         raise NotImplementedError
 
 
-class SoftwareRunner(ABC):
-    @abstractmethod
-    def build_command(self, binary_path: str, input_filename: str) -> str:
-        """Return shell command to execute the calculation."""
-        raise NotImplementedError
-
-    def default_environment(self) -> Dict[str, str]:
-        """Default environment variables for this software (override as needed)."""
-        return {"OMP_NUM_THREADS": os.getenv("OMP_NUM_THREADS", "1")}
+# Execution is handled by aqflow.core.executor; no runner abstraction needed here.

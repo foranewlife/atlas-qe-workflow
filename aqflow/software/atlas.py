@@ -1,12 +1,12 @@
 """
-ATLAS software adapter: input generation and command construction.
+ATLAS software adapter: input generation.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from .base import SoftwareInputGenerator, SoftwareRunner
+from .base import SoftwareInputGenerator
 from aqflow.core.configuration import StructureConfig, ParameterCombination, WorkflowConfiguration
 from aqflow.core.template_engine import TemplateProcessor, StructureProcessor
 
@@ -41,7 +41,4 @@ class AtlasInputGenerator(SoftwareInputGenerator):
         return input_path
 
 
-class AtlasRunner(SoftwareRunner):
-    def build_command(self, binary_path: str, input_filename: str) -> str:
-        # Atlas typically reads from stdin
-        return f"{binary_path}  > job.out 2>&1"
+# Execution is handled by aqflow.core.executor

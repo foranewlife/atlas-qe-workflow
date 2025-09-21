@@ -220,6 +220,38 @@ class Executor:
                 return r, req
         return None, 0
 
+    @dataclass
+    class ExecutionPlan:
+        is_remote: bool
+        host: Optional[str]
+        prep_cmds: list[str]
+        run_cmd: str
+        workdir: Path
+        env: Dict[str, str]
+        remote_dir: Optional[str]
+
+    def _build_plan(self, tid: str, t: Dict, chosen: Dict, cmd: str, env: Dict[str, str]) -> "Executor.ExecutionPlan":
+        workdir = Path(t.get("workdir"))
+        if chosen.get("type", "local") == "remote":
+            remote_dir = chosen.get("workdir")
+            remote_dir = f"{remote_dir.rstrip('/')}/{tid}" if remote_dir else None
+            host = _remote_host(chosen)
+            prep_cmds = self._plan_remote_prep(host, remote_dir, workdir)
+            run_cmd = self._plan_remote_run(host, remote_dir, workdir, cmd)
+            return Executor.ExecutionPlan(True, host, prep_cmds, run_cmd, workdir, env, remote_dir)
+        else:
+            return Executor.ExecutionPlan(False, None, [], cmd, workdir, env, None)
+
+    def _execute_plan(self, plan: "Executor.ExecutionPlan") -> tuple[subprocess.Popen, Optional[str]]:
+        if plan.is_remote:
+            for c in plan.prep_cmds:
+                self._run_shell(c).wait()
+            pop = self._run_shell(plan.run_cmd)
+            return pop, plan.remote_dir
+        else:
+            pop = subprocess.Popen(plan.run_cmd, shell=True, cwd=str(plan.workdir), env=plan.env)
+            return pop, None
+
     def _start_process(self, tid: str, t: Dict, chosen: Dict, req_cores: int) -> tuple[subprocess.Popen, Optional[str], str, float]:
         workdir = Path(t.get("workdir"))
         sw = t.get("type")
@@ -227,19 +259,8 @@ class Executor:
         cmd, cores, extra_env = _build_command(sw, sw_conf, workdir)
         env = os.environ.copy(); env.update(extra_env)
         started_at = time.time()
-        remote_dir_actual = None
-        if chosen.get("type", "local") == "remote":
-            remote_dir = chosen.get("workdir")
-            remote_dir = f"{remote_dir.rstrip('/')}/{tid}" if remote_dir else None
-            host = _remote_host(chosen)
-            prep_cmds = self._plan_remote_prep(host, remote_dir, workdir)
-            for c in prep_cmds:
-                self._run_shell(c).wait()
-            run_cmd = self._plan_remote_run(host, remote_dir, workdir, cmd)
-            pop = self._run_shell(run_cmd)
-            remote_dir_actual = remote_dir
-        else:
-            pop = subprocess.Popen(cmd, shell=True, cwd=str(workdir), env=env)
+        plan = self._build_plan(tid, t, chosen, cmd, env)
+        pop, remote_dir_actual = self._execute_plan(plan)
         t["status"] = "running"
         t["resource"] = chosen.get("name")
         t["cmd"] = cmd
