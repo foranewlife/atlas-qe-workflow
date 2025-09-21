@@ -34,8 +34,38 @@ except Exception:
 
 
 BOARD_PATH = Path("aqflow/board.json")
-# Global boards home for central board aggregation
-GLOBAL_HOME = Path(os.environ.get("AQFLOW_BOARD_HOME", str(Path.home() / ".aqflow" / "boards")))
+
+def _is_writable_dir(d: Path) -> bool:
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        test = d / ".writable"
+        test.write_text("ok")
+        test.unlink(missing_ok=True)
+        return True
+    except Exception:
+        return False
+
+def _resolve_global_home() -> Path:
+    # Priority: env -> home -> install root -> package dir -> /tmp
+    env = os.environ.get("AQFLOW_BOARD_HOME")
+    if env:
+        p = Path(env)
+        if _is_writable_dir(p):
+            return p
+    candidates = [
+        Path.home() / ".aqflow" / "boards",
+        Path(__file__).resolve().parents[2] / ".aqflow" / "boards",
+        Path(__file__).resolve().parents[1] / ".aqflow" / "boards",
+        Path("/tmp") / ".aqflow" / "boards",
+    ]
+    for c in candidates:
+        if _is_writable_dir(c):
+            return c
+    # Fallback: current working dir under aqflow/
+    return Path.cwd() / "aqflow"
+
+# Global boards home for centralized board aggregation
+GLOBAL_HOME = _resolve_global_home()
 
 
 def load_board(path: Path) -> Dict:

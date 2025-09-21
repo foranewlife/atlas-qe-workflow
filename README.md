@@ -334,7 +334,7 @@ data/{system}/
 - [x] **软件执行** - ATLAS/QE调用框架已建立
 - [x] **任务调度** - 任务管理和状态跟踪系统
 - [x] **结果收集** - 基础的能量提取和状态记录
-- [x] **状态追踪** - SQLite数据库缓存系统
+- [x] **状态追踪** - 单文件状态机（aqflow/board.json）
 - [x] **查询分析** - 命令行查询工具和数据导出
 - [x] **主执行器** - 替换 run_eos_workflow_modular.py 为 run_distributed_workflow.py
 
