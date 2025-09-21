@@ -36,16 +36,11 @@ def _ensure_dep(module: str, package: str) -> None:
 
 
 def submit_task(software: str, work_dir: Path, resources: Path) -> int:
-    """Submit current directory as a single task to the state machine."""
+    """Submit current directory as a single task to the executor.
+
+    No template or input pre-check here; executor will run with software defaults
+    (QE: '-in qe.in' fallback to 'job.in'; ATLAS: binary > job.out)."""
     work_dir = work_dir.resolve()
-    # Detect input file
-    if software == "qe":
-        inp = work_dir / ("qe.in" if (work_dir / "qe.in").exists() else "job.in")
-    else:
-        inp = work_dir / "atlas.in"
-    if not inp.exists():
-        print(f"Input file not found: {inp}")
-        return 1
     # Append task to board.json
     resources = Path(resources).resolve()
     ex = Executor(resources, board_path=BOARD_PATH, run_meta={

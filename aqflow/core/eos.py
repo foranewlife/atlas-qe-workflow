@@ -12,14 +12,17 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import List, Tuple
+import time
+import json
+from .models import EosModel, EosMeta, EosTaskEntry
 
 from .configuration import (
     ConfigurationLoader,
     ParameterSpaceEnumerator,
     WorkflowConfiguration,
 )
+from dataclasses import dataclass
 from .tasks import TaskCreator, TaskDef
-from .task_utils import RunResult
 from .executor import Executor, BOARD_PATH
 
 logger = logging.getLogger(__name__)
@@ -115,12 +118,65 @@ class EosController:
             })
         ex.add_tasks(entries)
         ex.save()
+        # Initialize eos.json using Pydantic model
+        eos_tasks = [
+            EosTaskEntry(
+                id=t.task_id,
+                structure=t.meta.get("structure", ""),
+                combination=t.meta.get("combination", ""),
+                volume_scale=float(t.meta.get("volume_scale", 0.0) or 0.0),
+                workdir=(
+                    str(t.work_dir.relative_to(Path.cwd()))
+                    if str(t.work_dir).startswith(str(Path.cwd()))
+                    else str(t.work_dir)
+                ),
+                status="queued",
+            )
+            for t in tasks
+        ]
+        eos_model = EosModel(
+            meta=EosMeta(
+                system=self.config.system,
+                description=self.config.description,
+                config_path=str(self.workflow_cfg_path.resolve()),
+                created_at=time.time(),
+                last_update=time.time(),
+            ),
+            tasks=eos_tasks,
+        )
+        self._write_eos(eos_model)
+
         ex.run()
 
         # Build results based on job.out presence
         results: List[RunResult] = []
-        for t in tasks:
+        # Update eos.json with statuses
+        for idx, t in enumerate(tasks):
             job_out = t.work_dir / "job.out"
             rc = 0 if job_out.exists() else 1
-            results.append(RunResult(task_id=t.task_id, returncode=rc, stdout_path=job_out, stderr_path=None))
+            results.append(RunResult(task_id=t.task_id, returncode=rc))
+            e = eos_model.tasks[idx]
+            e.status = "succeeded" if rc == 0 else "failed"
+            e.exit_code = rc
+            e.job_out = (
+                str(job_out.relative_to(Path.cwd()))
+                if str(job_out).startswith(str(Path.cwd()))
+                else str(job_out)
+            )
+        eos_model.meta.last_update = time.time()
+        self._write_eos(eos_model)
         return results
+
+
+    def _write_eos(self, model: EosModel) -> None:
+        p = Path.cwd() / "aqflow" / "eos.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(model.model_dump_json(indent=2))
+        tmp.replace(p)
+
+
+@dataclass
+class RunResult:
+    task_id: str
+    returncode: int

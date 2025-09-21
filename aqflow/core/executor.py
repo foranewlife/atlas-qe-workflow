@@ -147,8 +147,10 @@ def ensure_board(board_path: Path, meta: Dict) -> Dict:
         )
         return model.model_dump()
     # Validate with Pydantic but return dict for compatibility
+    # Validate and normalize board
     try:
-        _ = BoardModel.model_validate(raw)
+        model = BoardModel.model_validate(raw)
+        raw = model.model_dump()
     except Exception:
         # If invalid, rebuild minimal meta wrapper
         now = time.time()
@@ -177,23 +179,20 @@ def add_tasks(board: Dict, tasks: List[Dict]) -> None:
         t.setdefault("start_time", None)
         t.setdefault("end_time", None)
         t.setdefault("exit_code", None)
-        # Validate single task via Pydantic (best effort)
-        try:
-            _ = TaskModel.model_validate({
-                "id": t.get("id"),
-                "name": t.get("name"),
-                "type": t.get("type"),
-                "workdir": t.get("workdir"),
-                "status": t.get("status"),
-                "resource": t.get("resource"),
-                "cmd": t.get("cmd"),
-                "start_time": t.get("start_time"),
-                "end_time": t.get("end_time"),
-                "exit_code": t.get("exit_code"),
-            })
-        except Exception:
-            # Fall back to raw insert
-            pass
+        # Validate single task via Pydantic
+        model = TaskModel.model_validate({
+            "id": t.get("id"),
+            "name": t.get("name"),
+            "type": t.get("type"),
+            "workdir": t.get("workdir"),
+            "status": t.get("status"),
+            "resource": t.get("resource"),
+            "cmd": t.get("cmd"),
+            "start_time": t.get("start_time"),
+            "end_time": t.get("end_time"),
+            "exit_code": t.get("exit_code"),
+        })
+        t = model.model_dump()
         tasks_dict[tid] = t
 
 

@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Structure & Roles
-- Core: `aqflow/core/` — `eos.py`（任务与输入生成）、`executor.py`（极简执行/调度）、`tasks.py`（输入生成）、`task_utils.py`（工具）。
+- Core: `aqflow/core/` — `eos.py`（任务与输入生成）、`executor.py`（极简执行/调度）、`tasks.py`（输入生成）。
 - Software adapters: `aqflow/software/` — `atlas.py`, `qe.py`（输入生成）。
 - CLI: `aqflow`（统一入口）。
 - Config/Examples: `config/resources.yaml`, `examples/*`；Outputs: `results/`, Logs: `logs/`。
