@@ -25,6 +25,12 @@ from typing import Dict, List, Optional, Tuple
 
 import yaml
 from .models import BoardModel, BoardMeta, TaskModel
+import platform
+try:
+    import fcntl  # POSIX file locking
+    _HAVE_FCNTL = True
+except Exception:
+    _HAVE_FCNTL = False
 
 
 BOARD_PATH = Path("aqflow/board.json")
@@ -43,13 +49,19 @@ def load_board(path: Path) -> Dict:
 
 
 def save_board(path: Path, board: Dict) -> None:
+    """Persist board.json atomically; update global symlinks under a file lock (POSIX)."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(board, indent=2))
-    tmp.replace(p)
-    # Maintain global symlink for centralized board view
+    lock_path = p.with_suffix(".lock")
+    lock_fh = None
     try:
+        if _HAVE_FCNTL:
+            lock_fh = open(lock_path, "w")
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(board, indent=2))
+        tmp.replace(p)
+        # Maintain global symlink for centralized board view
         run_id = (board.get("meta") or {}).get("run_id") or p.stem
         gh = GLOBAL_HOME
         gh.mkdir(parents=True, exist_ok=True)
@@ -75,8 +87,16 @@ def save_board(path: Path, board: Dict) -> None:
         except Exception:
             if not latest.exists() and link.exists():
                 latest.write_bytes(link.read_bytes())
-    except Exception:
-        pass
+    finally:
+        if lock_fh is not None:
+            try:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+            try:
+                lock_fh.close()
+            except Exception:
+                pass
 
 
 def ensure_board(board_path: Path, meta: Dict) -> Dict:
@@ -212,13 +232,11 @@ class Executor:
             remote_dir = chosen.get("workdir")
             remote_dir = f"{remote_dir.rstrip('/')}/{tid}" if remote_dir else None
             host = _remote_host(chosen)
-            if remote_dir:
-                self._ssh(host, f"mkdir -p {shlex.quote(remote_dir)}").wait()
-                self._scp(f"{shlex.quote(str(workdir))}/*", f"{host}:{shlex.quote(remote_dir)}/").wait()
-                run_cmd = f"cd {shlex.quote(remote_dir)} && {cmd}"
-            else:
-                run_cmd = f"cd {shlex.quote(str(workdir))} && {cmd}"
-            pop = self._ssh(host, run_cmd)
+            prep_cmds = self._plan_remote_prep(host, remote_dir, workdir)
+            for c in prep_cmds:
+                self._run_shell(c).wait()
+            run_cmd = self._plan_remote_run(host, remote_dir, workdir, cmd)
+            pop = self._run_shell(run_cmd)
             remote_dir_actual = remote_dir
         else:
             pop = subprocess.Popen(cmd, shell=True, cwd=str(workdir), env=env)
@@ -228,11 +246,22 @@ class Executor:
         t["start_time"] = started_at
         return pop, remote_dir_actual, cmd, started_at
 
-    def _ssh(self, host: str, remote_cmd: str) -> subprocess.Popen:
-        return subprocess.Popen(f"ssh {shlex.quote(host)} {shlex.quote(remote_cmd)}", shell=True)
+    def _plan_remote_prep(self, host: str, remote_dir: Optional[str], workdir: Path) -> list[str]:
+        cmds: list[str] = []
+        if remote_dir:
+            cmds.append(f"ssh {shlex.quote(host)} {shlex.quote('mkdir -p ' + shlex.quote(remote_dir))}")
+            cmds.append(f"scp -r {shlex.quote(str(workdir))}/* {shlex.quote(host)}:{shlex.quote(remote_dir)}/")
+        return cmds
 
-    def _scp(self, src: str, dst: str) -> subprocess.Popen:
-        return subprocess.Popen(f"scp -r {src} {dst}", shell=True)
+    def _plan_remote_run(self, host: str, remote_dir: Optional[str], workdir: Path, cmd: str) -> str:
+        if remote_dir:
+            inner = f"cd {shlex.quote(remote_dir)} && {cmd}"
+        else:
+            inner = f"cd {shlex.quote(str(workdir))} && {cmd}"
+        return f"ssh {shlex.quote(host)} {shlex.quote(inner)}"
+
+    def _run_shell(self, cmd: str, cwd: Optional[Path] = None, env: Optional[Dict[str, str]] = None) -> subprocess.Popen:
+        return subprocess.Popen(cmd, shell=True, cwd=str(cwd) if cwd else None, env=env)
 
     def _poll_running(self, running: Dict[str, Running], tasks: Dict[str, Dict], timeouts: Dict) -> bool:
         progressed = False
@@ -265,9 +294,9 @@ class Executor:
             transfer = res.get("transfer") or {}
             pull_all = bool(transfer.get("pull_all", False))
             if pull_all:
-                self._scp(f"{shlex.quote(host)}:{shlex.quote(run.remote_dir)}/*", f"{shlex.quote(task['workdir'])}/").wait()
+                self._run_shell(f"scp -r {shlex.quote(host)}:{shlex.quote(run.remote_dir)}/* {shlex.quote(task['workdir'])}/").wait()
             else:
-                self._scp(f"{shlex.quote(host)}:{shlex.quote(run.remote_dir)}/job.out", f"{shlex.quote(task['workdir'])}/job.out").wait()
+                self._run_shell(f"scp {shlex.quote(host)}:{shlex.quote(run.remote_dir)}/job.out {shlex.quote(task['workdir'])}/job.out").wait()
 
     def _update_status(self, task: Dict, rc: int) -> None:
         task["end_time"] = time.time()
