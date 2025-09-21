@@ -98,3 +98,6 @@ config/cluster_config.yaml
 
 results
 test_output/
+\# runtime boards and locks
+aqflow/board.json
+aqflow/*.lock
