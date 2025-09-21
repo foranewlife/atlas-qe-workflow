@@ -31,6 +31,7 @@ dependencies = [
     "pymatgen>=2023.8.10",
     "pyyaml>=6.0",
     "pandas>=2.0.0",
+    "pydantic>=2.6.0",
     "plotly>=5.15.0",
     "click>=8.1.0",
     "tqdm>=4.65.0",

@@ -28,7 +28,7 @@ class QEInputGenerator(SoftwareInputGenerator):
 
         # Generate QE input content from template
         text = template_proc.process_template(
-            template_file=combination.template_file,
+            template_file=combination.template,
             substitutions=combination.template_substitutions,
             structure=structure,
             combination=combination,

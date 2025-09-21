@@ -1,5 +1,5 @@
 """
-Minimal single-file state machine orchestrator.
+Executor: single-file board orchestrator.
 
 Inputs:
 - resources_yaml: config/resources.yaml (schema: resources/scheduler/timeouts)
@@ -19,10 +19,12 @@ import os
 import subprocess
 import time
 from dataclasses import dataclass
+import shlex
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import yaml
+from .models import BoardModel, BoardMeta, TaskModel
 
 
 BOARD_PATH = Path("aqflow/board.json")
@@ -78,10 +80,29 @@ def save_board(path: Path, board: Dict) -> None:
 
 
 def ensure_board(board_path: Path, meta: Dict) -> Dict:
-    board = load_board(board_path)
-    if not board:
+    raw = load_board(board_path)
+    if not raw:
         now = time.time()
-        board = {
+        model = BoardModel(
+            meta=BoardMeta(
+                run_id=meta.get("run_id") or f"{meta.get('tool','run')}_{time.strftime('%Y%m%d-%H%M%S')}",
+                root=meta.get("root") or str(Path.cwd()),
+                resources_file=meta.get("resources_file", "config/resources.yaml"),
+                tool=meta.get("tool", "custom"),
+                args=meta.get("args", []),
+                start_time=now,
+                last_update=now,
+            ),
+            tasks={},
+        )
+        return model.model_dump()
+    # Validate with Pydantic but return dict for compatibility
+    try:
+        _ = BoardModel.model_validate(raw)
+    except Exception:
+        # If invalid, rebuild minimal meta wrapper
+        now = time.time()
+        raw = {
             "meta": {
                 "run_id": meta.get("run_id") or f"{meta.get('tool','run')}_{time.strftime('%Y%m%d-%H%M%S')}",
                 "root": meta.get("root") or str(Path.cwd()),
@@ -93,7 +114,7 @@ def ensure_board(board_path: Path, meta: Dict) -> Dict:
             },
             "tasks": {},
         }
-    return board
+    return raw
 
 
 def add_tasks(board: Dict, tasks: List[Dict]) -> None:
@@ -106,6 +127,23 @@ def add_tasks(board: Dict, tasks: List[Dict]) -> None:
         t.setdefault("start_time", None)
         t.setdefault("end_time", None)
         t.setdefault("exit_code", None)
+        # Validate single task via Pydantic (best effort)
+        try:
+            _ = TaskModel.model_validate({
+                "id": t.get("id"),
+                "name": t.get("name"),
+                "type": t.get("type"),
+                "workdir": t.get("workdir"),
+                "status": t.get("status"),
+                "resource": t.get("resource"),
+                "cmd": t.get("cmd"),
+                "start_time": t.get("start_time"),
+                "end_time": t.get("end_time"),
+                "exit_code": t.get("exit_code"),
+            })
+        except Exception:
+            # Fall back to raw insert
+            pass
         tasks_dict[tid] = t
 
 
@@ -141,118 +179,140 @@ class Executor:
         self._board["meta"]["last_update"] = time.time()
         save_board(self._board_path, self._board)
 
-    def run(self) -> int:
-        """Main loop. Returns 0 when all tasks finished (succeeded/failed/timeout)."""
-        resources_cfg = yaml.safe_load(self.resources_yaml.read_text())
-        resources: List[Dict] = resources_cfg.get("resources", [])
-        scheduler = resources_cfg.get("scheduler", {})
-        timeouts = resources_cfg.get("timeouts", {})
-        max_parallel = int(scheduler.get("max_parallel", 1))
+    def _load_resources(self) -> tuple[list[Dict], Dict, float]:
+        cfg = yaml.safe_load(self.resources_yaml.read_text())
+        resources: List[Dict] = cfg.get("resources", [])
+        scheduler = cfg.get("scheduler", {})
+        timeouts = cfg.get("timeouts", {})
         poll_interval = float(scheduler.get("poll_interval", 2))
+        self._max_parallel = int(scheduler.get("max_parallel", 1))
+        return resources, timeouts, poll_interval
 
+    def _choose_resource(self, sw: str, resources: List[Dict], running: Dict[str, Running]) -> tuple[Optional[Dict], int]:
+        for r in resources:
+            sw_conf = (r.get("software") or {}).get(sw)
+            if not sw_conf:
+                continue
+            req = int(sw_conf.get("cores", 1))
+            used = sum(run.cores for run in running.values() if run.resource is r)
+            cap = int(r.get("cores", 0))
+            if req <= max(0, cap - used):
+                return r, req
+        return None, 0
+
+    def _start_process(self, tid: str, t: Dict, chosen: Dict, req_cores: int) -> tuple[subprocess.Popen, Optional[str], str, float]:
+        workdir = Path(t.get("workdir"))
+        sw = t.get("type")
+        sw_conf = (chosen.get("software") or {}).get(sw) or {}
+        cmd, cores, extra_env = _build_command(sw, sw_conf, workdir)
+        env = os.environ.copy(); env.update(extra_env)
+        started_at = time.time()
+        remote_dir_actual = None
+        if chosen.get("type", "local") == "remote":
+            remote_dir = chosen.get("workdir")
+            remote_dir = f"{remote_dir.rstrip('/')}/{tid}" if remote_dir else None
+            host = _remote_host(chosen)
+            if remote_dir:
+                self._ssh(host, f"mkdir -p {shlex.quote(remote_dir)}").wait()
+                self._scp(f"{shlex.quote(str(workdir))}/*", f"{host}:{shlex.quote(remote_dir)}/").wait()
+                run_cmd = f"cd {shlex.quote(remote_dir)} && {cmd}"
+            else:
+                run_cmd = f"cd {shlex.quote(str(workdir))} && {cmd}"
+            pop = self._ssh(host, run_cmd)
+            remote_dir_actual = remote_dir
+        else:
+            pop = subprocess.Popen(cmd, shell=True, cwd=str(workdir), env=env)
+        t["status"] = "running"
+        t["resource"] = chosen.get("name")
+        t["cmd"] = cmd
+        t["start_time"] = started_at
+        return pop, remote_dir_actual, cmd, started_at
+
+    def _ssh(self, host: str, remote_cmd: str) -> subprocess.Popen:
+        return subprocess.Popen(f"ssh {shlex.quote(host)} {shlex.quote(remote_cmd)}", shell=True)
+
+    def _scp(self, src: str, dst: str) -> subprocess.Popen:
+        return subprocess.Popen(f"scp -r {src} {dst}", shell=True)
+
+    def _poll_running(self, running: Dict[str, Running], tasks: Dict[str, Dict], timeouts: Dict) -> bool:
+        progressed = False
+        for tid, run in list(running.items()):
+            rc = run.popen.poll()
+            t = tasks.get(tid) or {}
+            soft = None
+            if t.get("type") and isinstance(timeouts, dict):
+                soft = timeouts.get(t.get("type")) or timeouts.get("default")
+            if soft and t.get("start_time") and (rc is None):
+                if time.time() - float(t["start_time"]) > float(soft):
+                    try:
+                        run.popen.kill()
+                    except Exception:
+                        pass
+                    rc = 124
+            if rc is None:
+                continue
+            progressed = True
+            if run.resource.get("type") == "remote":
+                self._pull_outputs_remote(run, tasks[tid])
+            self._update_status(tasks[tid], int(rc))
+            running.pop(tid, None)
+        return progressed
+
+    def _pull_outputs_remote(self, run: Running, task: Dict) -> None:
+        res = run.resource
+        host = _remote_host(res)
+        if run.remote_dir:
+            transfer = res.get("transfer") or {}
+            pull_all = bool(transfer.get("pull_all", False))
+            if pull_all:
+                self._scp(f"{shlex.quote(host)}:{shlex.quote(run.remote_dir)}/*", f"{shlex.quote(task['workdir'])}/").wait()
+            else:
+                self._scp(f"{shlex.quote(host)}:{shlex.quote(run.remote_dir)}/job.out", f"{shlex.quote(task['workdir'])}/job.out").wait()
+
+    def _update_status(self, task: Dict, rc: int) -> None:
+        task["end_time"] = time.time()
+        task["exit_code"] = int(rc)
+        task["status"] = "succeeded" if rc == 0 else ("timeout" if rc == 124 else "failed")
+
+    def _should_exit(self) -> bool:
+        statuses = [t.get("status") for t in (self._board.get("tasks") or {}).values()]
+        return not any(s in ("queued", "created", "running") for s in statuses)
+
+    def run(self) -> int:
+        resources, timeouts, poll_interval = self._load_resources()
         running: Dict[str, Running] = {}
+        try:
+            while True:
+                tasks: Dict[str, Dict] = self._board.get("tasks", {})
+                running_count = sum(1 for t in tasks.values() if t.get("status") == "running")
+                slots = max(0, self._max_parallel - running_count)
 
-        while True:
-            tasks: Dict[str, Dict] = self._board.get("tasks", {})
-            running_count = sum(1 for t in tasks.values() if t.get("status") == "running")
-            slots = max(0, max_parallel - running_count)
-
-            if slots > 0:
-                for tid, t in list(tasks.items()):
-                    if slots <= 0:
+                while slots > 0:
+                    # Find a queued task
+                    queued = next((item for item in tasks.items() if item[1].get("status") in ("queued", "created")), None)
+                    if not queued:
                         break
-                    if t.get("status") not in ("queued", "created"):
-                        continue
-                    sw = t.get("type")
-                    chosen: Optional[Dict] = None
-                    chosen_cores = 0
-                    for r in resources:
-                        sw_conf = (r.get("software") or {}).get(sw)
-                        if not sw_conf:
-                            continue
-                        req = int(sw_conf.get("cores", 1))
-                        used = sum(run.cores for run in running.values() if run.resource is r)
-                        cap = int(r.get("cores", 0))
-                        if req <= max(0, cap - used):
-                            chosen = r
-                            chosen_cores = req
-                            break
+                    tid, t = queued
+                    chosen, req = self._choose_resource(t.get("type"), resources, running)
                     if not chosen:
-                        continue
-
-                    workdir = Path(t.get("workdir"))
-                    sw_conf = (chosen.get("software") or {}).get(sw) or {}
-                    cmd, req_cores, extra_env = _build_command(sw, sw_conf, workdir)
-                    env = os.environ.copy(); env.update(extra_env)
-                    started_at = time.time()
-                    if chosen.get("type", "local") == "remote":
-                        remote_dir = chosen.get("workdir")
-                        remote_dir = f"{remote_dir.rstrip('/')}/{tid}" if remote_dir else None
-                        host = _remote_host(chosen)
-                        if remote_dir:
-                            subprocess.Popen(f"ssh {host} \"mkdir -p {remote_dir}\"", shell=True).wait()
-                            subprocess.Popen(f"scp -r {workdir}/* {host}:{remote_dir}/", shell=True).wait()
-                            run_cmd = f"ssh {host} \"cd {remote_dir} && {cmd}\""
-                        else:
-                            run_cmd = f"ssh {host} \"cd {workdir} && {cmd}\""
-                        pop = subprocess.Popen(run_cmd, shell=True, cwd=str(workdir), env=env)
-                        remote_dir_actual = remote_dir
-                    else:
-                        pop = subprocess.Popen(cmd, shell=True, cwd=str(workdir), env=env)
-                        remote_dir_actual = None
-
-                    running[tid] = Running(popen=pop, task_id=tid, resource=chosen, remote_dir=remote_dir_actual, cores=chosen_cores or req_cores, started_at=started_at)
-                    t["status"] = "running"
-                    t["resource"] = chosen.get("name")
-                    t["cmd"] = cmd
-                    t["start_time"] = started_at
+                        break
+                    pop, remote_dir, cmd, started_at = self._start_process(tid, t, chosen, req)
+                    running[tid] = Running(popen=pop, task_id=tid, resource=chosen, remote_dir=remote_dir, cores=req, started_at=started_at)
                     slots -= 1
 
-            progressed = False
-            for tid, run in list(running.items()):
-                rc = run.popen.poll()
-                t = tasks.get(tid) or {}
-                soft = None
-                if t.get("type") and isinstance(timeouts, dict):
-                    soft = timeouts.get(t.get("type")) or timeouts.get("default")
-                if soft and t.get("start_time"):
-                    if time.time() - float(t["start_time"]) > float(soft):
-                        try:
-                            run.popen.kill()
-                        except Exception:
-                            pass
-                        rc = 124
-                if rc is None:
-                    continue
-                progressed = True
-
-                res = run.resource
-                if res.get("type") == "remote":
-                    host = _remote_host(res)
-                    if run.remote_dir:
-                        transfer = res.get("transfer") or {}
-                        pull_all = bool(transfer.get("pull_all", False))
-                        if pull_all:
-                            subprocess.Popen(f"scp -r {host}:{run.remote_dir}/* {tasks[tid]['workdir']}/", shell=True).wait()
-                        else:
-                            subprocess.Popen(f"scp {host}:{run.remote_dir}/job.out {tasks[tid]['workdir']}/job.out", shell=True).wait()
-                t = tasks.get(tid) or {}
-                t["end_time"] = time.time()
-                t["exit_code"] = int(rc)
-                t["status"] = "succeeded" if int(rc) == 0 else ("timeout" if int(rc) == 124 else "failed")
-                running.pop(tid, None)
-
+                progressed = self._poll_running(running, tasks, timeouts)
+                self._board["meta"]["last_update"] = time.time()
+                save_board(self._board_path, self._board)
+                if self._should_exit():
+                    return 0
+                if not progressed and slots == 0 and running:
+                    time.sleep(poll_interval)
+                else:
+                    time.sleep(0.2)
+        except KeyboardInterrupt:
             self._board["meta"]["last_update"] = time.time()
             save_board(self._board_path, self._board)
-
-            statuses = [t.get("status") for t in (self._board.get("tasks") or {}).values()]
-            if not any(s in ("queued", "created", "running") for s in statuses):
-                return 0
-
-            if not progressed and slots == 0 and running:
-                time.sleep(poll_interval)
-            else:
-                time.sleep(0.2)
+            return 130
 
 
 @dataclass
@@ -305,4 +365,3 @@ def run(resources_yaml: Path, board_path: Path = BOARD_PATH) -> int:
     """Compatibility wrapper executing through the Executor class."""
     ex = Executor(resources_yaml, board_path=board_path)
     return ex.run()
-

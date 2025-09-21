@@ -94,6 +94,10 @@ def cmd_board(args: argparse.Namespace) -> int:
         print(f"root={root}")
         # Header
         print("task_id  name                 type   status   elapsed  quick")
+        def fmt_elapsed(sec: int) -> str:
+            h = sec // 3600; m = (sec % 3600) // 60; s = sec % 60
+            return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
         for t in tasks:
             tid = t.get("id", "-")
             name = (t.get("name") or "-")[:20].ljust(20)
@@ -104,10 +108,7 @@ def cmd_board(args: argparse.Namespace) -> int:
             end = t.get("end_time") or None
             now = time.time()
             sec = int((end or now) - start) if start else 0
-            if sec >= 3600:
-                elapsed = f"{sec//3600:02d}:{(sec%3600)//60:02d}h"
-            else:
-                elapsed = f"{sec//60:02d}:{sec%60:02d}m"
+            elapsed = fmt_elapsed(sec)
             quick = f"cd {t.get('workdir', '.')}; tail -n 200 job.out"
             rname = t.get("resource")
             res = resmap.get(rname) if rname else None

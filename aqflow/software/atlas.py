@@ -31,7 +31,7 @@ class AtlasInputGenerator(SoftwareInputGenerator):
 
         # Process template and write atlas.in
         text = template_proc.process_template(
-            template_file=combination.template_file,
+            template_file=combination.template,
             substitutions=combination.template_substitutions,
             structure=structure,
             combination=combination,
@@ -45,4 +45,3 @@ class AtlasRunner(SoftwareRunner):
     def build_command(self, binary_path: str, input_filename: str) -> str:
         # Atlas typically reads from stdin
         return f"{binary_path}  > job.out 2>&1"
-
