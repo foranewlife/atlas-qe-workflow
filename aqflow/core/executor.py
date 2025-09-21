@@ -303,21 +303,34 @@ class Executor:
                 continue
             progressed = True
             if run.resource.get("type") == "remote":
-                self._pull_outputs_remote(run, tasks[tid])
+                # Plan pull and execute (side effects isolated)
+                for cmd in self._plan_pull_outputs(run, tasks[tid]):
+                    self._run_shell(cmd).wait()
             self._update_status(tasks[tid], int(rc))
             running.pop(tid, None)
         return progressed
 
-    def _pull_outputs_remote(self, run: Running, task: Dict) -> None:
+    def _plan_pull_outputs(self, run: Running, task: Dict) -> list[str]:
+        """Return a list of shell commands (strings) to collect remote outputs.
+
+        Pure planning: no side effects here.
+        """
+        cmds: list[str] = []
         res = run.resource
         host = _remote_host(res)
-        if run.remote_dir:
-            transfer = res.get("transfer") or {}
-            pull_all = bool(transfer.get("pull_all", False))
-            if pull_all:
-                self._run_shell(f"scp -r {shlex.quote(host)}:{shlex.quote(run.remote_dir)}/* {shlex.quote(task['workdir'])}/").wait()
-            else:
-                self._run_shell(f"scp {shlex.quote(host)}:{shlex.quote(run.remote_dir)}/job.out {shlex.quote(task['workdir'])}/job.out").wait()
+        if not run.remote_dir:
+            return cmds
+        transfer = res.get("transfer") or {}
+        pull_all = bool(transfer.get("pull_all", False))
+        if pull_all:
+            cmds.append(
+                f"scp -r {shlex.quote(host)}:{shlex.quote(run.remote_dir)}/* {shlex.quote(task['workdir'])}/"
+            )
+        else:
+            cmds.append(
+                f"scp {shlex.quote(host)}:{shlex.quote(run.remote_dir)}/job.out {shlex.quote(task['workdir'])}/job.out"
+            )
+        return cmds
 
     def _update_status(self, task: Dict, rc: int) -> None:
         task["end_time"] = time.time()

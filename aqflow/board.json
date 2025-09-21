@@ -10,7 +10,7 @@
       "/Users/chenys/project/TB-OFDFT/phase2/soft/atlas-qe-workflow/examples/test_qe_small/test_qe_small.yaml"
     ],
     "start_time": 1758360091.632427,
-    "last_update": 1758361101.203851
+    "last_update": 1758414244.40946
   },
   "tasks": {
     "gaas_zincblende_qe_ecut60_gaas_lda_lpp_density_00": {
@@ -21,8 +21,8 @@
       "status": "succeeded",
       "resource": "local_echo",
       "cmd": "/bin/echo -in qe.in > job.out 2>&1",
-      "start_time": 1758361100.995807,
-      "end_time": 1758361101.203847,
+      "start_time": 1758414244.201526,
+      "end_time": 1758414244.409455,
       "exit_code": 0
     }
   }

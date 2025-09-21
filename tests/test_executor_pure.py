@@ -32,3 +32,18 @@ def test_should_exit(tmp_path):
     assert ex._should_exit() is True
     ex.board["tasks"]["c"] = {"status": "running"}
     assert ex._should_exit() is False
+
+
+def test_plan_pull_outputs(tmp_path):
+    ex = Executor(resources_yaml=tmp_path / "res.yaml", board_path=tmp_path / "aqflow" / "board.json", run_meta={"tool": "test"})
+    # Mock a remote running record
+    run = type("R", (), {})()
+    run.resource = {"type": "remote", "transfer": {"pull_all": False}, "user": "u", "host": "h"}
+    run.remote_dir = "/remote/jobdir"
+    task = {"workdir": "/local/work"}
+    cmds = ex._plan_pull_outputs(run, task)
+    assert len(cmds) == 1 and "scp" in cmds[0]
+    # pull_all=True branch
+    run.resource["transfer"] = {"pull_all": True}
+    cmds2 = ex._plan_pull_outputs(run, task)
+    assert len(cmds2) == 1 and "-r" in cmds2[0]
