@@ -1,13 +1,10 @@
 """
-EOS Post-Processing: parse energies from job outputs and build EOS dataset/fit.
+EOS Post-Processing: parse energies/volumes, fit EOS with pymatgen, and plot.
 
 Outputs (under aqflow_data/ by default):
-- eos_post.json: structured data (points + optional quadratic fit)
+- eos_post.json: structured data (points + quadratic fallback + pymatgen fit)
 - eos_points.tsv: tabular data for quick plotting (volume_scale, energy_eV, status, workdir)
-
-No heavy deps; quadratic fit implemented via normal equations. QE energies (Ry) are
-converted to eV (1 Ry = 13.605693009 eV). ATLAS energies assumed to be eV if unit
-isn't present.
+- eos_curve.png / eos_curve_relative.png: absolute and relative EOS curves
 """
 
 from __future__ import annotations
@@ -21,40 +18,14 @@ import time
 
 from .models import EosModel
 from aqflow.software.parsers import parse_energy as sw_parse_energy, parse_volume as sw_parse_volume
+import numpy as np
+import matplotlib.pyplot as plt
+from pymatgen.analysis.eos import EOS
 
 RY_TO_EV = 13.605693009
 
 
-def _ensure_pymatgen() -> None:
-    try:
-        import pymatgen  # noqa: F401
-        return
-    except Exception:
-        import subprocess
-        try:
-            subprocess.run(["uv", "pip", "install", "pymatgen"], check=False)
-        except Exception:
-            pass
-    try:
-        import pymatgen  # noqa: F401
-    except Exception as e:
-        raise RuntimeError("'pymatgen' is required for EOS fitting. Install with: uv pip install pymatgen") from e
-
-
-def _ensure_matplotlib() -> None:
-    try:
-        import matplotlib  # noqa: F401
-        return
-    except Exception:
-        import subprocess
-        try:
-            subprocess.run(["uv", "pip", "install", "matplotlib"], check=False)
-        except Exception:
-            pass
-    try:
-        import matplotlib  # noqa: F401
-    except Exception as e:
-        raise RuntimeError("'matplotlib' is required for EOS plotting. Install with: uv pip install matplotlib") from e
+# Assume dependencies exist per project convention; no auto-install here.
 
 
 def _read_text(path: Path) -> str:
@@ -223,83 +194,104 @@ class EosPostProcessor:
         # pymatgen EOS fit
         pmg_params = None
         eos_fit_obj = None
-        try:
-            if len(vols) >= 3 and len(vols) == len(ys):
-                _ensure_pymatgen()
-                from pymatgen.analysis.eos import EOS  # type: ignore
-                eos = EOS(eos_name=self.eos_model_name)
-                eos_fit_obj = eos.fit(vols, ys)
-                pmg_params = {
-                    "e0": float(eos_fit_obj.e0),
-                    "v0": float(eos_fit_obj.v0),
-                    "b0_GPa": float(eos_fit_obj.b0_GPa),
-                    "b1": float(eos_fit_obj.b1),
-                    "n_points": len(vols),
-                }
-                out_obj["pmg_fit"] = pmg_params
-        except Exception as e:
-            out_obj.setdefault("pmg_fit", {"error": str(e)})
+        if len(vols) >= 3 and len(vols) == len(ys):
+            eos = EOS(eos_name=self.eos_model_name)
+            eos_fit_obj = eos.fit(vols, ys)
+            pmg_params = {
+                "e0": float(eos_fit_obj.e0),
+                "v0": float(eos_fit_obj.v0),
+                "b0_GPa": float(eos_fit_obj.b0_GPa),
+                "b1": float(eos_fit_obj.b1),
+                "n_points": len(vols),
+            }
+            out_obj["pmg_fit"] = pmg_params
 
         # Plotting (absolute and relative)
         if self.make_plots and vols and ys:
-            try:
-                _ensure_matplotlib()
-                import matplotlib
-                matplotlib.use("Agg")  # ensure non-interactive backend
-                import matplotlib.pyplot as plt
-                import numpy as np
+            # Sort by volume for smooth curves
+            order = np.argsort(vols)
+            v = np.array(vols, dtype=float)[order]
+            e = np.array(ys, dtype=float)[order]
 
-                # Sort by volume for smooth curves
-                order = np.argsort(vols)
-                v = np.array(vols, dtype=float)[order]
-                e = np.array(ys, dtype=float)[order]
+            color = plt.cm.tab10(np.linspace(0, 1, 1))[0]
 
-                # Absolute energy plot
-                fig, ax = plt.subplots()
-                ax.scatter(v, e, s=30, alpha=0.8, zorder=3, label="data")
-                if eos_fit_obj is not None:
-                    vfit = np.linspace(v.min() * 0.95, v.max() * 1.05, 300)
-                    efit = eos_fit_obj.func(vfit)
-                    ax.plot(vfit, efit, lw=2, alpha=0.9, label=f"{self.eos_model_name}")
-                    ax.axvline(x=float(eos_fit_obj.v0), color="gray", ls="--", alpha=0.6)
-                    ax.plot(float(eos_fit_obj.v0), float(eos_fit_obj.e0), "o", color="red", ms=6)
-                ax.set_xlabel("Volume ($\u212B^3$)")
-                ax.set_ylabel("Energy (eV)")
-                ax.set_title("EOS: Energy vs Volume")
-                ax.grid(alpha=0.3)
-                ax.legend()
-                self.abs_png.parent.mkdir(parents=True, exist_ok=True)
-                fig.tight_layout()
-                fig.savefig(self.abs_png, dpi=200)
-                plt.close(fig)
+            # Absolute energy plot
+            fig, ax = plt.subplots()
+            ax.scatter(v, e, color=color, s=50, alpha=0.7, zorder=3)
+            if eos_fit_obj is not None:
+                vfit = np.linspace(v.min() * 0.9, v.max() * 1.1, 200)
+                efit = eos_fit_obj.func(vfit)
+                ax.plot(
+                    vfit,
+                    efit,
+                    color=color,
+                    linewidth=2,
+                    linestyle='-',
+                    alpha=0.8,
+                    zorder=2,
+                    label=f"{self.eos_model_name} (B0={eos_fit_obj.b0_GPa:.3f} GPa)",
+                )
+                ax.axvline(x=float(eos_fit_obj.v0), color=color, linestyle='--', alpha=0.6)
+                ax.plot(
+                    float(eos_fit_obj.v0),
+                    float(eos_fit_obj.e0),
+                    'o',
+                    color=color,
+                    markersize=8,
+                    markeredgecolor='black',
+                    markeredgewidth=1,
+                    zorder=4,
+                )
+            ax.set_xlabel("Volume (Ang^3)", fontsize=14)
+            ax.set_ylabel("Energy (eV)", fontsize=14)
+            ax.set_title("Equation of State (EOS) Curves", fontsize=16)
+            ax.legend(fontsize=12)
+            ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+            self.abs_png.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(self.abs_png, dpi=300)
+            plt.close(fig)
 
-                # Relative energy plot (E - E0)
-                fig, ax = plt.subplots()
-                if pmg_params is not None:
-                    e0 = pmg_params["e0"]
-                else:
-                    # fallback: minimal energy
-                    e0 = float(np.min(e))
-                ax.scatter(v, e - e0, s=30, alpha=0.8, zorder=3, label="data")
-                if eos_fit_obj is not None:
-                    vfit = np.linspace(v.min() * 0.95, v.max() * 1.05, 300)
-                    efit = eos_fit_obj.func(vfit) - e0
-                    ax.plot(vfit, efit, lw=2, alpha=0.9, label=f"{self.eos_model_name}")
-                    ax.axvline(x=float(eos_fit_obj.v0), color="gray", ls="--", alpha=0.6)
-                    ax.plot(float(eos_fit_obj.v0), 0.0, "o", color="red", ms=6)
-                ax.set_xlabel("Volume ($\u212B^3$)")
-                ax.set_ylabel("Energy - $E_0$ (eV)")
-                ax.set_title("EOS: Relative Energy")
-                ax.grid(alpha=0.3)
-                ax.legend()
-                self.rel_png.parent.mkdir(parents=True, exist_ok=True)
-                fig.tight_layout()
-                fig.savefig(self.rel_png, dpi=200)
-                plt.close(fig)
-                out_obj.setdefault("plots", {})["abs_png"] = str(self.abs_png)
-                out_obj.setdefault("plots", {})["rel_png"] = str(self.rel_png)
-            except Exception as e:
-                out_obj.setdefault("plots", {"error": str(e)})
+            # Relative energy plot (E - E0)
+            fig, ax = plt.subplots()
+            e0 = float(eos_fit_obj.e0) if eos_fit_obj is not None else float(np.min(e))
+            ax.scatter(v, e - e0, color=color, s=50, alpha=0.7, zorder=3)
+            if eos_fit_obj is not None:
+                vfit = np.linspace(v.min() * 0.9, v.max() * 1.1, 200)
+                efit = eos_fit_obj.func(vfit) - e0
+                ax.plot(
+                    vfit,
+                    efit,
+                    color=color,
+                    linewidth=2,
+                    linestyle='-',
+                    alpha=0.8,
+                    zorder=2,
+                    label=f"{self.eos_model_name} (B0={eos_fit_obj.b0_GPa:.3f} GPa)",
+                )
+                ax.axvline(x=float(eos_fit_obj.v0), color=color, linestyle='--', alpha=0.6)
+                ax.plot(
+                    float(eos_fit_obj.v0),
+                    0.0,
+                    'o',
+                    color=color,
+                    markersize=8,
+                    markeredgecolor='black',
+                    markeredgewidth=1,
+                    zorder=4,
+                )
+            ax.set_xlabel("Volume (Ang^3)", fontsize=14)
+            ax.set_ylabel("Energy - E0 (eV)", fontsize=14)
+            ax.set_title("EOS Curves Relative to Equilibrium Energy", fontsize=16)
+            ax.legend(fontsize=12)
+            ax.grid(True, alpha=0.3)
+            ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+            fig.tight_layout()
+            self.rel_png.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(self.rel_png, dpi=300)
+            plt.close(fig)
+            out_obj.setdefault("plots", {})["abs_png"] = str(self.abs_png)
+            out_obj.setdefault("plots", {})["rel_png"] = str(self.rel_png)
 
         # Persist json (atomic write)
         self.out_json.parent.mkdir(parents=True, exist_ok=True)
@@ -308,20 +300,13 @@ class EosPostProcessor:
         tmp.replace(self.out_json)
 
         # Persist tsv
-        try:
-            with open(self.out_tsv, "w") as fh:
-                fh.write("volume_scale\tenergy_eV\tstatus\tworkdir\n")
-                for p in points:
-                    e = "" if p["energy_eV"] is None else f"{p['energy_eV']:.9f}"
-                    fh.write(f"{p['volume_scale']:.6f}\t{e}\t{p['status']}\t{p['workdir']}\n")
-        except Exception:
-            pass
+        with open(self.out_tsv, "w") as fh:
+            fh.write("volume_scale\tenergy_eV\tstatus\tworkdir\n")
+            for p in points:
+                e = "" if p["energy_eV"] is None else f"{p['energy_eV']:.9f}"
+                fh.write(f"{p['volume_scale']:.6f}\t{e}\t{p['status']}\t{p['workdir']}\n")
 
         # Also update eos.json with parsed energies
-        try:
-            Path(self.eos_json).write_text(EosModel.model_validate_json(model.model_dump_json()).model_dump_json(indent=2))
-        except Exception:
-            # best-effort; do not fail post-processing on write-back
-            pass
+        Path(self.eos_json).write_text(model.model_dump_json(indent=2))
 
         return out_obj
