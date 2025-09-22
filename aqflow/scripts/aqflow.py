@@ -23,7 +23,6 @@ from aqflow.utils.logging_config import setup_logging
 from aqflow.core.executor import (
     Executor,
     BOARD_PATH,
-    load_board,
     GLOBAL_BOARDS,
     GLOBAL_RESOURCES,
     cleanup_invalid_symlinks,
@@ -34,20 +33,6 @@ from aqflow.core.executor import (
 )
 from aqflow.core.eos_post import EosPostProcessor
  
-
-
-def _ensure_dep(module: str, package: str) -> None:
-    """Ensure a dependency exists; if missing, try to install via 'uv pip install'.
-
-    Only used in CLI edge paths (e.g., optional yaml for board rendering).
-    """
-    try:
-        __import__(module)
-    except ImportError:
-        # Best-effort install; ignore failures to keep CLI functional
-        from subprocess import run
-        run(["uv", "pip", "install", package], check=False)
-
 
 def submit_task(software: str, work_dir: Path, resources: Path) -> int:
     """Submit current directory as a single task to the executor.
@@ -126,6 +111,8 @@ def cmd_local(args: argparse.Namespace, software: str) -> int:
         stop.set()
         try:
             t.join(timeout=2.0)
+            if t.is_alive():
+                print("Warning: board watcher did not exit within 2s; cursor may flicker briefly.")
         except Exception:
             pass
     return rc
@@ -155,6 +142,8 @@ def cmd_eos(args: argparse.Namespace) -> int:
         stop.set()
         try:
             t.join(timeout=2.0)
+            if t.is_alive():
+                print("Warning: board watcher did not exit within 2s; cursor may flicker briefly.")
         except Exception:
             pass
         failed = [r for r in results if r.returncode != 0]
@@ -163,6 +152,21 @@ def cmd_eos(args: argparse.Namespace) -> int:
     except Exception as e:
         print(f"EOS failed: {e}")
         return 1
+
+
+def cmd_eos_post(args: argparse.Namespace) -> int:
+    proc = EosPostProcessor(
+        eos_json=Path(args.eos_file).resolve(),
+        out_json=Path(args.out_json).resolve(),
+        out_tsv=Path(args.out_tsv).resolve(),
+        fit=args.fit,
+        eos_model_name=args.eos_model,
+    )
+    out = proc.run()
+    print(f"eos post: wrote {proc.out_json} and {proc.out_tsv}")
+    if (out.get('fit') or {}).get('vmin') is not None:
+        print(f"fit vmin={out['fit']['vmin']:.6f}, emin={out['fit']['emin']:.9f} eV")
+    return 0
 
 
 def main():
@@ -231,19 +235,6 @@ def main():
     p_eos_post.set_defaults(func=cmd_eos_post)
 
     args = parser.parse_args()
-def cmd_eos_post(args: argparse.Namespace) -> int:
-    proc = EosPostProcessor(
-        eos_json=Path(args.eos_file).resolve(),
-        out_json=Path(args.out_json).resolve(),
-        out_tsv=Path(args.out_tsv).resolve(),
-        fit=args.fit,
-        eos_model_name=args.eos_model,
-    )
-    out = proc.run()
-    print(f"eos post: wrote {proc.out_json} and {proc.out_tsv}")
-    if (out.get('fit') or {}).get('vmin') is not None:
-        print(f"fit vmin={out['fit']['vmin']:.6f}, emin={out['fit']['emin']:.9f} eV")
-    return 0
     if not hasattr(args, "func"):
         parser.print_help()
         return 1
