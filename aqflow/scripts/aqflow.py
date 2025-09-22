@@ -32,6 +32,7 @@ from aqflow.core.executor import (
     watch_single_board,
     set_board_row_limit,
 )
+from aqflow.core.eos_post import EosPostProcessor
  
 
 
@@ -219,7 +220,26 @@ def main():
     p_eos.add_argument("--limit", type=int, default=50, help="Max rows per view (default: 50). 0 to disable")
     p_eos.set_defaults(func=cmd_eos)
 
+    p_eos_post = sub.add_parser("eos-post", help="Post-process EOS results (parse energies, fit)")
+    p_eos_post.add_argument("--eos-file", default=str(Path.cwd() / "aqflow_data" / "eos.json"))
+    p_eos_post.add_argument("--out-json", default=str(Path.cwd() / "aqflow_data" / "eos_post.json"))
+    p_eos_post.add_argument("--out-tsv", default=str(Path.cwd() / "aqflow_data" / "eos_points.tsv"))
+    p_eos_post.add_argument("--fit", choices=["none", "quad"], default="quad")
+    p_eos_post.set_defaults(func=cmd_eos_post)
+
     args = parser.parse_args()
+def cmd_eos_post(args: argparse.Namespace) -> int:
+    proc = EosPostProcessor(
+        eos_json=Path(args.eos_file).resolve(),
+        out_json=Path(args.out_json).resolve(),
+        out_tsv=Path(args.out_tsv).resolve(),
+        fit=args.fit,
+    )
+    out = proc.run()
+    print(f"eos post: wrote {proc.out_json} and {proc.out_tsv}")
+    if (out.get('fit') or {}).get('vmin') is not None:
+        print(f"fit vmin={out['fit']['vmin']:.6f}, emin={out['fit']['emin']:.9f} eV")
+    return 0
     if not hasattr(args, "func"):
         parser.print_help()
         return 1
