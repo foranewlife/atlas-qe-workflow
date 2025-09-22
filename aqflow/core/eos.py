@@ -169,7 +169,7 @@ class EosController:
 
 
     def _write_eos(self, model: EosModel) -> None:
-        p = Path.cwd() / "aqflow" / "eos.json"
+        p = Path.cwd() / "aqflow_data" / "eos.json"
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_suffix(".tmp")
         tmp.write_text(model.model_dump_json(indent=2))

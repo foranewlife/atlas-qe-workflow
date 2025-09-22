@@ -273,7 +273,7 @@ aqflow board
 
 #### 任务与状态
 - **任务状态**：created/queued/running/succeeded/failed/timeout
-- **状态持久化**：aqflow/board.json（工作目录），~/.aqflow/boards（聚合查看）
+- **状态持久化**：<workpath>/aqflow_data/board.json（工作目录），<install_path>/aqflow_data/boards（聚合查看）
 
 #### 资源调度
 - **本机**：ATLAS单核，QE多核MPI

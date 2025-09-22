@@ -9,11 +9,11 @@
 ## Run & Logs
 - Minimal run（建议加超时防卡）：
   - `timeout 60s aqflow eos examples/test_qe_small/test_qe_small.yaml`
-- 状态持久化：`aqflow/board.json`（单文件）；全局软链：`~/.aqflow/boards/`。
+- 状态持久化：`aqflow/board.json`（单文件）；全局软链：`<install_path>/aqflow/boards/`。
 - 日志：`logs/aqflow.log`（文件），终端默认只显示 WARNING+。
 
 ## Dashboard（无服务）与本地提交
-- 终端看板：`aqflow board`（聚合 `~/.aqflow/boards/*.json`，默认仅显示 running）。
+- 终端看板：`aqflow board`（聚合 `<install_path>/aqflow/boards/*.json`，默认仅显示 running）。
 - 直接将当前目录提交给调度器：`aqflow atlas` 或 `aqflow qe`（读取 `config/resources.yaml`）。
 
 ## Resource & Scheduler Config（config/resources.yaml）

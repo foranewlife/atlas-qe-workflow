@@ -96,8 +96,5 @@ config/cluster_config.yaml
 *.dat
 *.bin
 
-results
-test_output/
-\# runtime boards and locks
-aqflow/board.json
-aqflow/*.lock
+results/
+aqflow_data/
