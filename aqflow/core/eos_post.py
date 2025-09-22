@@ -20,6 +20,7 @@ import re
 import time
 
 from .models import EosModel
+from aqflow.software.parsers import parse_energy as sw_parse_energy, parse_volume as sw_parse_volume
 
 RY_TO_EV = 13.605693009
 
@@ -40,6 +41,22 @@ def _ensure_pymatgen() -> None:
         raise RuntimeError("'pymatgen' is required for EOS fitting. Install with: uv pip install pymatgen") from e
 
 
+def _ensure_matplotlib() -> None:
+    try:
+        import matplotlib  # noqa: F401
+        return
+    except Exception:
+        import subprocess
+        try:
+            subprocess.run(["uv", "pip", "install", "matplotlib"], check=False)
+        except Exception:
+            pass
+    try:
+        import matplotlib  # noqa: F401
+    except Exception as e:
+        raise RuntimeError("'matplotlib' is required for EOS plotting. Install with: uv pip install matplotlib") from e
+
+
 def _read_text(path: Path) -> str:
     try:
         return Path(path).read_text(errors="ignore")
@@ -56,53 +73,12 @@ def _detect_software_from_combo(combination: str) -> Optional[str]:
     return None
 
 
-def _parse_energy_qe(text: str) -> Optional[float]:
-    # Prefer line starting with '!    total energy =  xxx Ry'
-    m = re.search(r"^\s*!\s*total energy\s*=\s*([-+0-9.]+)\s*(Ry|eV)?", text, re.MULTILINE)
-    if not m:
-        # Fallback: any 'total energy' line
-        m = re.search(r"total energy\s*=\s*([-+0-9.]+)\s*(Ry|eV)?", text, re.IGNORECASE)
-    if not m:
-        return None
-    val = float(m.group(1))
-    unit = (m.group(2) or "Ry").strip()
-    if unit.lower() == "ry":
-        return val * RY_TO_EV
-    return val
+def _parse_energy_any(software: str, text: str) -> Optional[float]:
+    return sw_parse_energy(software, text)
 
 
-def _parse_energy_atlas(text: str) -> Optional[float]:
-    # Try common patterns: 'Total Energy = xxx eV' or 'Total energy: xxx eV'
-    m = re.search(r"Total\s+Energy\s*[:=]\s*([-+0-9.]+)\s*(eV|Ry)?", text, re.IGNORECASE)
-    if not m:
-        # Generic 'energy' fallback
-        m = re.search(r"energy\s*[:=]\s*([-+0-9.]+)\s*(eV|Ry)?", text, re.IGNORECASE)
-    if not m:
-        return None
-    val = float(m.group(1))
-    unit = (m.group(2) or "eV").strip()
-    if unit.lower() == "ry":
-        return val * RY_TO_EV
-    return val
-
-
-def _parse_poscar_volume(poscar_content: str) -> Optional[float]:
-    try:
-        if not poscar_content:
-            return None
-        lines = [ln.strip() for ln in poscar_content.splitlines() if ln.strip()]
-        if len(lines) < 5:
-            return None
-        scale = float(lines[1])
-        import numpy as np
-        a = np.fromstring(lines[2], sep=" ")[:3]
-        b = np.fromstring(lines[3], sep=" ")[:3]
-        c = np.fromstring(lines[4], sep=" ")[:3]
-        lat = np.vstack([a, b, c]) * scale
-        vol = float(abs(np.linalg.det(lat)))
-        return vol
-    except Exception:
-        return None
+def _parse_volume_any(software: str, workdir: Path) -> Optional[float]:
+    return sw_parse_volume(software, workdir)
 
 
 def _polyfit_quadratic(xs: List[float], ys: List[float]) -> Optional[Tuple[float, float, float]]:
@@ -175,8 +151,10 @@ class EosPostProcessor:
     out_json: Path = Path.cwd() / "aqflow_data" / "eos_post.json"
     out_tsv: Path = Path.cwd() / "aqflow_data" / "eos_points.tsv"
     fit: str = "quad"  # "none" | "quad"
-
     eos_model_name: str = "birch_murnaghan"  # pymatgen EOS model name
+    make_plots: bool = True
+    abs_png: Path = Path.cwd() / "aqflow_data" / "eos_curve.png"
+    rel_png: Path = Path.cwd() / "aqflow_data" / "eos_curve_relative.png"
 
     def run(self) -> Dict:
         raw = json.loads(Path(self.eos_json).read_text())
@@ -191,21 +169,11 @@ class EosPostProcessor:
             job_out = Path(t.job_out) if t.job_out else Path(t.workdir) / "job.out"
             txt = _read_text(job_out)
             software = _detect_software_from_combo(t.combination) or "qe"
-            e = _parse_energy_qe(txt) if software == "qe" else _parse_energy_atlas(txt)
+            e = _parse_energy_any(software, txt)
             # Update in-memory model for convenience
             t.energy = e
-            # Determine volume from POSCAR
-            poscar = Path(t.workdir) / "POSCAR"
-            vol = None
-            try:
-                # Prefer pymatgen if available; fallback to manual parse
-                try:
-                    from pymatgen.core.structure import Structure  # type: ignore
-                    vol = float(Structure.from_file(poscar).volume) if poscar.exists() else None
-                except Exception:
-                    vol = _parse_poscar_volume(_read_text(poscar)) if poscar.exists() else None
-            except Exception:
-                vol = None
+            # Determine volume via software parser
+            vol = _parse_volume_any(software, Path(t.workdir))
             points.append({
                 "structure": t.structure,
                 "combination": t.combination,
@@ -253,21 +221,85 @@ class EosPostProcessor:
         }
 
         # pymatgen EOS fit
+        pmg_params = None
+        eos_fit_obj = None
         try:
             if len(vols) >= 3 and len(vols) == len(ys):
                 _ensure_pymatgen()
                 from pymatgen.analysis.eos import EOS  # type: ignore
                 eos = EOS(eos_name=self.eos_model_name)
-                eos_fit = eos.fit(vols, ys)
-                out_obj["pmg_fit"] = {
-                    "e0": float(eos_fit.e0),
-                    "v0": float(eos_fit.v0),
-                    "b0_GPa": float(eos_fit.b0_GPa),
-                    "b1": float(eos_fit.b1),
+                eos_fit_obj = eos.fit(vols, ys)
+                pmg_params = {
+                    "e0": float(eos_fit_obj.e0),
+                    "v0": float(eos_fit_obj.v0),
+                    "b0_GPa": float(eos_fit_obj.b0_GPa),
+                    "b1": float(eos_fit_obj.b1),
                     "n_points": len(vols),
                 }
+                out_obj["pmg_fit"] = pmg_params
         except Exception as e:
             out_obj.setdefault("pmg_fit", {"error": str(e)})
+
+        # Plotting (absolute and relative)
+        if self.make_plots and vols and ys:
+            try:
+                _ensure_matplotlib()
+                import matplotlib
+                matplotlib.use("Agg")  # ensure non-interactive backend
+                import matplotlib.pyplot as plt
+                import numpy as np
+
+                # Sort by volume for smooth curves
+                order = np.argsort(vols)
+                v = np.array(vols, dtype=float)[order]
+                e = np.array(ys, dtype=float)[order]
+
+                # Absolute energy plot
+                fig, ax = plt.subplots()
+                ax.scatter(v, e, s=30, alpha=0.8, zorder=3, label="data")
+                if eos_fit_obj is not None:
+                    vfit = np.linspace(v.min() * 0.95, v.max() * 1.05, 300)
+                    efit = eos_fit_obj.func(vfit)
+                    ax.plot(vfit, efit, lw=2, alpha=0.9, label=f"{self.eos_model_name}")
+                    ax.axvline(x=float(eos_fit_obj.v0), color="gray", ls="--", alpha=0.6)
+                    ax.plot(float(eos_fit_obj.v0), float(eos_fit_obj.e0), "o", color="red", ms=6)
+                ax.set_xlabel("Volume ($\u212B^3$)")
+                ax.set_ylabel("Energy (eV)")
+                ax.set_title("EOS: Energy vs Volume")
+                ax.grid(alpha=0.3)
+                ax.legend()
+                self.abs_png.parent.mkdir(parents=True, exist_ok=True)
+                fig.tight_layout()
+                fig.savefig(self.abs_png, dpi=200)
+                plt.close(fig)
+
+                # Relative energy plot (E - E0)
+                fig, ax = plt.subplots()
+                if pmg_params is not None:
+                    e0 = pmg_params["e0"]
+                else:
+                    # fallback: minimal energy
+                    e0 = float(np.min(e))
+                ax.scatter(v, e - e0, s=30, alpha=0.8, zorder=3, label="data")
+                if eos_fit_obj is not None:
+                    vfit = np.linspace(v.min() * 0.95, v.max() * 1.05, 300)
+                    efit = eos_fit_obj.func(vfit) - e0
+                    ax.plot(vfit, efit, lw=2, alpha=0.9, label=f"{self.eos_model_name}")
+                    ax.axvline(x=float(eos_fit_obj.v0), color="gray", ls="--", alpha=0.6)
+                    ax.plot(float(eos_fit_obj.v0), 0.0, "o", color="red", ms=6)
+                ax.set_xlabel("Volume ($\u212B^3$)")
+                ax.set_ylabel("Energy - $E_0$ (eV)")
+                ax.set_title("EOS: Relative Energy")
+                ax.grid(alpha=0.3)
+                ax.legend()
+                self.rel_png.parent.mkdir(parents=True, exist_ok=True)
+                fig.tight_layout()
+                fig.savefig(self.rel_png, dpi=200)
+                plt.close(fig)
+                out_obj.setdefault("plots", {})["abs_png"] = str(self.abs_png)
+                out_obj.setdefault("plots", {})["rel_png"] = str(self.rel_png)
+            except Exception as e:
+                out_obj.setdefault("plots", {"error": str(e)})
 
         # Persist json (atomic write)
         self.out_json.parent.mkdir(parents=True, exist_ok=True)

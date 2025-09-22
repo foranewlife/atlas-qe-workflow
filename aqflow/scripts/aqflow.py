@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 from threading import Event, Thread
 from typing import List
+import logging
 
 from aqflow.core.eos import EosController
 from aqflow.utils.logging_config import setup_logging
@@ -32,6 +33,7 @@ from aqflow.core.executor import (
     set_board_row_limit,
 )
 from aqflow.core.eos_post import EosPostProcessor
+
  
 
 def submit_task(software: str, work_dir: Path, resources: Path) -> int:
@@ -60,7 +62,7 @@ def submit_task(software: str, work_dir: Path, resources: Path) -> int:
     ex.save()
     ex.run()
     rc = 0 if (work_dir / "job.out").exists() else 1
-    print(f"submitted {task_id}, rc={rc}")
+    logging.getLogger("atlas-qe-workflow").info("submitted %s rc=%d", task_id, rc)
     return rc
 
 
@@ -112,7 +114,7 @@ def cmd_local(args: argparse.Namespace, software: str) -> int:
         try:
             t.join(timeout=2.0)
             if t.is_alive():
-                print("Warning: board watcher did not exit within 2s; cursor may flicker briefly.")
+                logging.getLogger("atlas-qe-workflow").warning("board watcher did not exit within 2s; cursor may flicker briefly")
         except Exception:
             pass
     return rc
@@ -143,24 +145,54 @@ def cmd_eos(args: argparse.Namespace) -> int:
         try:
             t.join(timeout=2.0)
             if t.is_alive():
-                print("Warning: board watcher did not exit within 2s; cursor may flicker briefly.")
+                logging.getLogger("atlas-qe-workflow").warning("board watcher did not exit within 2s; cursor may flicker briefly")
         except Exception:
             pass
         failed = [r for r in results if r.returncode != 0]
         print(f"EOS done: {len(results)-len(failed)}/{len(results)} ok")
+        # Auto post-processing (parse energies, fit, plots)
+        if getattr(args, "post", True):
+            try:
+                post = EosPostProcessor(
+                    eos_json=Path.cwd() / "aqflow_data" / "eos.json",
+                    out_json=Path.cwd() / "aqflow_data" / "eos_post.json",
+                    out_tsv=Path.cwd() / "aqflow_data" / "eos_points.tsv",
+                    fit=getattr(args, "post_fit", "quad"),
+                    eos_model_name=getattr(args, "post_eos_model", "birch_murnaghan"),
+                    make_plots=getattr(args, "post_plot", True),
+                )
+                out = post.run()
+                pmg = (out.get("pmg_fit") or {})
+                if pmg and not pmg.get("error"):
+                    logging.getLogger("atlas-qe-workflow").info(
+                        "EOS fit (pymatgen): V0=%.3f A^3, B0=%.2f GPa, E0=%.6f eV",
+                        pmg.get('v0'), pmg.get('b0_GPa'), pmg.get('e0')
+                    )
+                if out.get("plots") and not out["plots"].get("error"):
+                    logging.getLogger("atlas-qe-workflow").info(
+                        "Plots saved: %s , %s",
+                        out['plots'].get('abs_png',''), out['plots'].get('rel_png','')
+                    )
+            except Exception as e:
+                logging.getLogger("atlas-qe-workflow").error("EOS post failed: %s", e)
         return 0 if not failed else 1
     except Exception as e:
-        print(f"EOS failed: {e}")
+        logging.getLogger("atlas-qe-workflow").error("EOS failed: %s", e)
         return 1
 
 
 def cmd_eos_post(args: argparse.Namespace) -> int:
+    # Ensure logs are set (default INFO to file; WARNING on console)
+    setup_logging(level="INFO")
     proc = EosPostProcessor(
         eos_json=Path(args.eos_file).resolve(),
         out_json=Path(args.out_json).resolve(),
         out_tsv=Path(args.out_tsv).resolve(),
         fit=args.fit,
         eos_model_name=args.eos_model,
+        make_plots=bool(getattr(args, "plot", True)),
+        abs_png=Path(getattr(args, "abs_png", Path.cwd() / "aqflow_data" / "eos_curve.png")).resolve(),
+        rel_png=Path(getattr(args, "rel_png", Path.cwd() / "aqflow_data" / "eos_curve_relative.png")).resolve(),
     )
     out = proc.run()
     print(f"eos post: wrote {proc.out_json} and {proc.out_tsv}")
@@ -222,9 +254,16 @@ def main():
     p_eos.add_argument("--no-watch", dest="watch", action="store_false", help="Disable live board display")
     p_eos.add_argument("--interval", type=float, default=0.5, help="Watch refresh interval seconds (default: 0.5)")
     p_eos.add_argument("--limit", type=int, default=50, help="Max rows per view (default: 50). 0 to disable")
+    # Auto post-processing
+    p_eos.add_argument("--no-post", dest="post", action="store_false", default=True, help="Disable EOS post-processing after run")
+    p_eos.add_argument("--post", dest="post", action="store_true", help=argparse.SUPPRESS)
+    p_eos.add_argument("--post-eos-model", default="birch_murnaghan")
+    p_eos.add_argument("--post-fit", choices=["none", "quad"], default="quad")
+    p_eos.add_argument("--no-post-plot", dest="post_plot", action="store_false", default=True, help="Disable plot generation in post")
+    p_eos.add_argument("--post-plot", dest="post_plot", action="store_true", help=argparse.SUPPRESS)
     p_eos.set_defaults(func=cmd_eos)
 
-    p_eos_post = sub.add_parser("eos-post", help="Post-process EOS results (parse energies, fit)")
+    p_eos_post = sub.add_parser("eos-post", help="Post-process EOS results (parse energies, fit, plots)")
     p_eos_post.add_argument("--eos-file", default=str(Path.cwd() / "aqflow_data" / "eos.json"))
     p_eos_post.add_argument("--out-json", default=str(Path.cwd() / "aqflow_data" / "eos_post.json"))
     p_eos_post.add_argument("--out-tsv", default=str(Path.cwd() / "aqflow_data" / "eos_points.tsv"))
@@ -232,6 +271,10 @@ def main():
     p_eos_post.add_argument("--eos-model", dest="eos_model", choices=[
         "birch_murnaghan", "murnaghan", "vinet", "pourier_tarantola", "anton_schmidt", "natural_spline"
     ], default="birch_murnaghan")
+    p_eos_post.add_argument("--plot", dest="plot", action="store_true", default=True, help="Generate plots (default)")
+    p_eos_post.add_argument("--no-plot", dest="plot", action="store_false", help="Disable plot generation")
+    p_eos_post.add_argument("--abs-png", default=str(Path.cwd() / "aqflow_data" / "eos_curve.png"))
+    p_eos_post.add_argument("--rel-png", default=str(Path.cwd() / "aqflow_data" / "eos_curve_relative.png"))
     p_eos_post.set_defaults(func=cmd_eos_post)
 
     args = parser.parse_args()
