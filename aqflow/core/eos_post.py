@@ -24,6 +24,22 @@ from .models import EosModel
 RY_TO_EV = 13.605693009
 
 
+def _ensure_pymatgen() -> None:
+    try:
+        import pymatgen  # noqa: F401
+        return
+    except Exception:
+        import subprocess
+        try:
+            subprocess.run(["uv", "pip", "install", "pymatgen"], check=False)
+        except Exception:
+            pass
+    try:
+        import pymatgen  # noqa: F401
+    except Exception as e:
+        raise RuntimeError("'pymatgen' is required for EOS fitting. Install with: uv pip install pymatgen") from e
+
+
 def _read_text(path: Path) -> str:
     try:
         return Path(path).read_text(errors="ignore")
@@ -68,6 +84,25 @@ def _parse_energy_atlas(text: str) -> Optional[float]:
     if unit.lower() == "ry":
         return val * RY_TO_EV
     return val
+
+
+def _parse_poscar_volume(poscar_content: str) -> Optional[float]:
+    try:
+        if not poscar_content:
+            return None
+        lines = [ln.strip() for ln in poscar_content.splitlines() if ln.strip()]
+        if len(lines) < 5:
+            return None
+        scale = float(lines[1])
+        import numpy as np
+        a = np.fromstring(lines[2], sep=" ")[:3]
+        b = np.fromstring(lines[3], sep=" ")[:3]
+        c = np.fromstring(lines[4], sep=" ")[:3]
+        lat = np.vstack([a, b, c]) * scale
+        vol = float(abs(np.linalg.det(lat)))
+        return vol
+    except Exception:
+        return None
 
 
 def _polyfit_quadratic(xs: List[float], ys: List[float]) -> Optional[Tuple[float, float, float]]:
@@ -141,6 +176,8 @@ class EosPostProcessor:
     out_tsv: Path = Path.cwd() / "aqflow_data" / "eos_points.tsv"
     fit: str = "quad"  # "none" | "quad"
 
+    eos_model_name: str = "birch_murnaghan"  # pymatgen EOS model name
+
     def run(self) -> Dict:
         raw = json.loads(Path(self.eos_json).read_text())
         model = EosModel.model_validate(raw)
@@ -148,6 +185,7 @@ class EosPostProcessor:
         points: List[Dict] = []
         xs: List[float] = []
         ys: List[float] = []
+        vols: List[float] = []
 
         for t in model.tasks:
             job_out = Path(t.job_out) if t.job_out else Path(t.workdir) / "job.out"
@@ -156,6 +194,18 @@ class EosPostProcessor:
             e = _parse_energy_qe(txt) if software == "qe" else _parse_energy_atlas(txt)
             # Update in-memory model for convenience
             t.energy = e
+            # Determine volume from POSCAR
+            poscar = Path(t.workdir) / "POSCAR"
+            vol = None
+            try:
+                # Prefer pymatgen if available; fallback to manual parse
+                try:
+                    from pymatgen.core.structure import Structure  # type: ignore
+                    vol = float(Structure.from_file(poscar).volume) if poscar.exists() else None
+                except Exception:
+                    vol = _parse_poscar_volume(_read_text(poscar)) if poscar.exists() else None
+            except Exception:
+                vol = None
             points.append({
                 "structure": t.structure,
                 "combination": t.combination,
@@ -167,6 +217,8 @@ class EosPostProcessor:
             if e is not None and t.status == "succeeded":
                 xs.append(float(t.volume_scale))
                 ys.append(float(e))
+                if vol is not None:
+                    vols.append(float(vol))
 
         fit_result: Dict[str, Optional[float] | str | int] = {"method": self.fit}
         if self.fit == "quad" and len(xs) >= 3:
@@ -194,10 +246,28 @@ class EosPostProcessor:
                 "created_at": time.time(),
                 "source": str(self.eos_json),
                 "fit": self.fit,
+                "pymatgen_eos": self.eos_model_name,
             },
             "points": points,
             "fit": fit_result,
         }
+
+        # pymatgen EOS fit
+        try:
+            if len(vols) >= 3 and len(vols) == len(ys):
+                _ensure_pymatgen()
+                from pymatgen.analysis.eos import EOS  # type: ignore
+                eos = EOS(eos_name=self.eos_model_name)
+                eos_fit = eos.fit(vols, ys)
+                out_obj["pmg_fit"] = {
+                    "e0": float(eos_fit.e0),
+                    "v0": float(eos_fit.v0),
+                    "b0_GPa": float(eos_fit.b0_GPa),
+                    "b1": float(eos_fit.b1),
+                    "n_points": len(vols),
+                }
+        except Exception as e:
+            out_obj.setdefault("pmg_fit", {"error": str(e)})
 
         # Persist json (atomic write)
         self.out_json.parent.mkdir(parents=True, exist_ok=True)
@@ -223,4 +293,3 @@ class EosPostProcessor:
             pass
 
         return out_obj
-

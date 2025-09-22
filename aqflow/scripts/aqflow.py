@@ -225,6 +225,9 @@ def main():
     p_eos_post.add_argument("--out-json", default=str(Path.cwd() / "aqflow_data" / "eos_post.json"))
     p_eos_post.add_argument("--out-tsv", default=str(Path.cwd() / "aqflow_data" / "eos_points.tsv"))
     p_eos_post.add_argument("--fit", choices=["none", "quad"], default="quad")
+    p_eos_post.add_argument("--eos-model", dest="eos_model", choices=[
+        "birch_murnaghan", "murnaghan", "vinet", "pourier_tarantola", "anton_schmidt", "natural_spline"
+    ], default="birch_murnaghan")
     p_eos_post.set_defaults(func=cmd_eos_post)
 
     args = parser.parse_args()
@@ -234,6 +237,7 @@ def cmd_eos_post(args: argparse.Namespace) -> int:
         out_json=Path(args.out_json).resolve(),
         out_tsv=Path(args.out_tsv).resolve(),
         fit=args.fit,
+        eos_model_name=args.eos_model,
     )
     out = proc.run()
     print(f"eos post: wrote {proc.out_json} and {proc.out_tsv}")
