@@ -4,13 +4,13 @@
 - Core: `aqflow/core/` — `eos.py`（任务与输入生成）、`executor.py`（极简执行/调度）、`tasks.py`（输入生成）。
 - Software adapters: `aqflow/software/` — `atlas.py`, `qe.py`（输入生成）。
 - CLI: `aqflow`（统一入口）。
-- Config/Examples: `config/resources.yaml`, `examples/*`；Outputs: `results/`, Logs: `logs/`。
+- Config/Examples: `config/resources.yaml`, `examples/*`；Outputs: `results/`, Logs: `aqflow_data/`。
 
 ## Run & Logs
 - Minimal run（建议加超时防卡）：
   - `timeout 60s aqflow eos examples/test_qe_small/test_qe_small.yaml`
 - 状态持久化：`aqflow/board.json`（单文件）；全局软链：`<install_path>/aqflow/boards/`。
-- 日志：`logs/aqflow.log`（文件），终端默认只显示 WARNING+。
+- 日志：`aqflow_data/aqflow.log`（文件），终端默认只显示 WARNING+。
 
 ## Dashboard（无服务）与本地提交
 - 终端看板：`aqflow board`（聚合 `<install_path>/aqflow/boards/*.json`，默认仅显示 running）。
@@ -29,5 +29,5 @@
 - 可执行放 `scripts/`，复用逻辑放 `aqflow/`；不要把输出写到 repo 根。
 
 ## Dev Tips
-- 远端失败定位：日志包含 `ssh/scp` rc 与命令；回收失败会打印错误；如需详细命令打印请查看 `logs/aqflow.log`。
+- 远端失败定位：日志包含 `ssh/scp` rc 与命令；回收失败会打印错误；如需详细命令打印请查看 `aqflow_data/aqflow.log`。
 - 常用目录：QE/ATLAS 输出默认回收 `job.out`；如需全量回收，在资源下开启 `transfer.pull_all`。

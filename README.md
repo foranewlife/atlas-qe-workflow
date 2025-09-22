@@ -238,6 +238,32 @@ aqflow board
 # aqflow board --filter status:failed --group-by resource
 ```
 
+### CLI 说明（新增/变更）
+
+- 实时看板：`aqflow board`
+  - 默认实时刷新，仅显示 running；支持 `--all` 查看全部
+  - 常用参数：`--interval 1.0` 刷新间隔；`--limit 50` 每组最多显示行数（0 取消限制）
+  - 过滤/分组：`--filter status:failed` 可多次；`--group-by resource|type`
+  - 单次输出：`--once`；仅清理无效软链：`--clean-only`
+
+- 单次运行看板：`aqflow atlas|qe|eos`
+  - 默认开启仅显示当前运行的实时看板；可用 `--no-watch` 关闭
+  - 调整刷新：`--interval 0.5`；显示行数限制：`--limit 50`
+
+- EOS 后处理：`aqflow eos-post`
+  - 从 `aqflow_data/eos.json` 解析能量与体积，拟合 EOS（默认 birch_murnaghan），并生成图像
+  - 常用参数：
+    - `--eos-model birch_murnaghan|murnaghan|vinet|pourier_tarantola|anton_schmidt|natural_spline`
+    - `--fit quad|none`（额外输出二次回退拟合参数）
+    - `--plot/--no-plot` 是否生成图；`--abs-png/--rel-png` 图像路径
+  - `aqflow eos` 结束后默认自动执行 post（可用 `--no-post` 关闭）
+
+- 依赖约定
+  - 看板：需要 rich；后处理：需要 pymatgen 与 matplotlib；项目默认假定依赖已安装
+  - 软件解析：软件相关能量/体积解析逻辑在 `aqflow/software/parsers.py`
+    - QE 无需 POSCAR：体积优先从 job.out `unit-cell volume` 解析，否则从 `qe.in` 的 `CELL_PARAMETERS`
+    - ATLAS 从 `POSCAR` 解析体积
+
 ### 当前交付成果
 
 #### 1. 可运行的模块化工作流系统

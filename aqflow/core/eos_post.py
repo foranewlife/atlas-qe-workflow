@@ -15,11 +15,14 @@ from typing import Dict, List, Optional, Tuple
 import json
 import re
 import time
+import logging
 
 from .models import EosModel
 from aqflow.software.parsers import parse_energy as sw_parse_energy, parse_volume as sw_parse_volume
 import numpy as np
 import matplotlib.pyplot as plt
+
+logger = logging.getLogger(__name__)
 from pymatgen.analysis.eos import EOS
 
 RY_TO_EV = 13.605693009
@@ -153,6 +156,7 @@ class EosPostProcessor:
                 "status": t.status,
                 "workdir": t.workdir,
             })
+            logger.info(f"Parsed task {t.workdir}: energy={e}, volume={vol}, status={t.status}")
             if e is not None and t.status == "succeeded":
                 xs.append(float(t.volume_scale))
                 ys.append(float(e))
@@ -209,9 +213,8 @@ class EosPostProcessor:
         # Plotting (absolute and relative)
         if self.make_plots and vols and ys:
             # Sort by volume for smooth curves
-            order = np.argsort(vols)
-            v = np.array(vols, dtype=float)[order]
-            e = np.array(ys, dtype=float)[order]
+            v = np.array(vols, dtype=float)
+            e = np.array(ys, dtype=float)
 
             color = plt.cm.tab10(np.linspace(0, 1, 1))[0]
 

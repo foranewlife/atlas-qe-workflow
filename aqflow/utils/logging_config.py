@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+LOG_PATH = Path("aqflow_data") / "aqflow.log"
 
 def setup_logging(
     level: str = "INFO",
@@ -28,9 +29,9 @@ def setup_logging(
     if format_string is None:
         format_string = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
-    # Determine log file path: default to logs/aqflow.log
+    # Determine log file path: default to aqflow_data/aqflow.log
     if log_file is None:
-        log_path = Path("logs") / "aqflow.log"
+        log_path = LOG_PATH
     else:
         log_path = Path(log_file)
     log_path.parent.mkdir(parents=True, exist_ok=True)

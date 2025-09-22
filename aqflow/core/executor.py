@@ -22,6 +22,7 @@ from dataclasses import dataclass
 import shlex
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Iterable, Any
+import logging
 
 import yaml
 from .models import BoardModel, BoardMeta, TaskModel
@@ -34,6 +35,9 @@ try:
     _HAVE_FCNTL = True
 except Exception:
     _HAVE_FCNTL = False
+
+# write log
+logger = logging.getLogger(__name__)    
 
 def _is_writable_dir(d: Path) -> bool:
     try:
@@ -281,10 +285,13 @@ class Executor:
     def _execute_plan(self, plan: "Executor.ExecutionPlan") -> tuple[subprocess.Popen, Optional[str]]:
         if plan.is_remote:
             for c in plan.prep_cmds:
+                logger.info(f"Executing remote prep: {c}")
                 self._run_shell(c).wait()
+            logger.info(f"Executing remotely on {plan.host}: {plan.run_cmd}")    
             pop = self._run_shell(plan.run_cmd)
             return pop, plan.remote_dir
         else:
+            logger.info(f"Executing locally in {plan.workdir}: {plan.run_cmd}")
             pop = subprocess.Popen(plan.run_cmd, shell=True, cwd=str(plan.workdir), env=plan.env)
             return pop, None
 
