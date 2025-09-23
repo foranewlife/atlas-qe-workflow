@@ -118,6 +118,8 @@ class EosTaskEntry(BaseModel):
     exit_code: Optional[int] = None
     job_out: Optional[str] = None
     energy: Optional[float] = None  # placeholder for future parsing
+    # Parsed volume in Angstrom^3 (optional; filled by eos-post)
+    volume: Optional[float] = None
 
     @field_validator("workdir")
     @classmethod
@@ -128,7 +130,16 @@ class EosTaskEntry(BaseModel):
 
 class EosModel(BaseModel):
     meta: EosMeta
+    # Schema and units metadata to help downstream tools
+    schema_version: int = 1
+    units: Dict[str, str] = Field(default_factory=lambda: {"energy": "eV", "volume": "A^3"})
+    run: Dict[str, str] = Field(default_factory=dict)
+
     tasks: List[EosTaskEntry] = Field(default_factory=list)
+    # Snapshot of configuration for easier post-processing
+    structures_info: Dict[str, Dict] = Field(default_factory=dict)
+    combinations_info: Dict[str, Dict] = Field(default_factory=dict)
+    curves_index: List[Dict] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def unique_ids(self) -> "EosModel":

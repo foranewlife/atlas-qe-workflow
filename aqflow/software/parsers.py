@@ -47,14 +47,31 @@ def parse_qe_energy(text: str) -> Optional[float]:
 
 
 def parse_atlas_energy(text: str) -> Optional[float]:
-    m = re.search(r"Total\s+Energy\s*[:=]\s*([-+0-9.]+)\s*(eV|Ry)?", text, re.IGNORECASE)
+    """Parse ATLAS energy from job.out text.
+
+    Fallback order:
+    - "Total Energy" or generic "energy" style lines if present
+    - TN iteration table: use the last row's Energy(eV/atom) and return that value (per-atom)
+      Note: callers needing total energy should multiply by atom count.
+    """
+    # 1) Try explicit labeled energies first
+    m = re.search(r"Total\s+Energy\s*[:=]\s*([-+0-9.Ee]+)\s*(eV|Ry)?", text, re.IGNORECASE)
     if not m:
-        m = re.search(r"energy\s*[:=]\s*([-+0-9.]+)\s*(eV|Ry)?", text, re.IGNORECASE)
-    if not m:
-        return None
-    val = float(m.group(1))
-    unit = (m.group(2) or "eV").strip()
-    return val * RY_TO_EV if unit.lower() == "ry" else val
+        m = re.search(r"\benergy\s*[:=]\s*([-+0-9.Ee]+)\s*(eV|Ry)?", text, re.IGNORECASE)
+    if m:
+        val = float(m.group(1))
+        unit = (m.group(2) or "eV").strip()
+        return val * RY_TO_EV if unit.lower() == "ry" else val
+
+    # 2) Parse TN table rows
+    # Header example: Method    N     Energy(Ha)          Energy(eV/atom)           dE(eV/atom)
+    # Row example:   TN    :     9     0.181688117400E+01    0.617998128360E+01  -0.89672E-09
+    rows = re.findall(r"^[A-Za-z]+\s*:\s*\d+\s+([0-9.+\-Ee]+)\s+([0-9.+\-Ee]+)\s+([0-9.+\-Ee]+)", text, re.MULTILINE)
+    if rows:
+        # Return Energy(eV/atom) from the last iteration
+        epa = float(rows[-1][1])
+        return epa
+    return None
 
 
 # ---------------- Volume ----------------
@@ -133,4 +150,3 @@ def parse_volume_from_poscar(poscar_content: str) -> Optional[float]:
         return vol
     except Exception:
         return None
-

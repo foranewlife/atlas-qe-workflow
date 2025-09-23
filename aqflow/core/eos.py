@@ -134,6 +134,73 @@ class EosController:
             )
             for t in tasks
         ]
+        # Snapshot structures and combinations for downstream post/analysis
+        structures_info = {}
+        for s in self.config.structures:
+            vol_series = self.config.generate_volume_series(s)
+            struct_file = None
+            if s.file:
+                p = Path(s.file)
+                if not p.is_absolute():
+                    p = self.config_dir / p
+                struct_file = str(p)
+            structures_info[s.name] = {
+                "name": s.name,
+                "elements": list(s.elements),
+                "description": s.description,
+                "volume_range": list(s.volume_range),
+                "volume_points": int(s.volume_points),
+                "volume_series": [float(x) for x in vol_series],
+                "file": struct_file,
+            }
+
+        combinations_info = {}
+        for c in self.config.parameter_combinations:
+            tpl = Path(c.template)
+            if not tpl.is_absolute():
+                tpl = self.config_dir / tpl
+            # Resolve pseudopotential files for convenience
+            pp_set_name = c.pseudopotential_set
+            pp_map = self.config.pseudopotential_sets.get(pp_set_name, {})
+            pp_resolved = {}
+            for elem, fn in (pp_map or {}).items():
+                p = Path(fn)
+                if not p.is_absolute():
+                    p = self.config_dir / p
+                pp_resolved[elem] = str(p)
+            combinations_info[c.name] = {
+                "name": c.name,
+                "software": c.software,
+                "template": str(tpl),
+                "applies_to_structures": list(c.applies_to_structures),
+                "pseudopotential_set": pp_set_name,
+                "pseudopotentials": pp_resolved,
+                "template_substitutions": dict(c.template_substitutions or {}),
+            }
+
+        # Curves index: group tasks by (structure, combination)
+        curves_map = {}
+        for t in tasks:
+            key = f"{t.meta.get('structure','')}|{t.meta.get('combination','')}"
+            cur = curves_map.setdefault(
+                key,
+                {
+                    "key": key,
+                    "structure": t.meta.get("structure", ""),
+                    "combination": t.meta.get("combination", ""),
+                    "task_ids": [],
+                    "workdirs": [],
+                    "volume_scales": [],
+                },
+            )
+            cur["task_ids"].append(t.task_id)
+            cur["workdirs"].append(
+                str(t.work_dir.relative_to(Path.cwd()))
+                if str(t.work_dir).startswith(str(Path.cwd()))
+                else str(t.work_dir)
+            )
+            cur["volume_scales"].append(float(t.meta.get("volume_scale", 0.0) or 0.0))
+
         eos_model = EosModel(
             meta=EosMeta(
                 system=self.config.system,
@@ -142,7 +209,17 @@ class EosController:
                 created_at=time.time(),
                 last_update=time.time(),
             ),
+            schema_version=1,
+            units={"energy": "eV", "volume": "A^3"},
+            run={
+                "root": str(Path.cwd()),
+                "resources_file": str(self.resources_file.resolve()),
+                "results_base": str(self.results_base),
+            },
             tasks=eos_tasks,
+            structures_info=structures_info,
+            combinations_info=combinations_info,
+            curves_index=list(curves_map.values()),
         )
         self._write_eos(eos_model)
 
