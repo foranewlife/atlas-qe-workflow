@@ -352,6 +352,23 @@ class Executor:
                     self._run_shell(cmd).wait()
             # Update status
             self._update_status(tasks[tid], int(rc))
+            # Write per-workdir cache on success
+            if int(rc) == 0:
+                tdict = tasks[tid]
+                sw = tdict.get("type")
+                sw_conf = (run.resource.get("software") or {}).get(sw) or {}
+                try:
+                    from .cache import write_success_cache
+                    write_success_cache(
+                        software=sw,
+                        bin_path=str(sw_conf.get("path")),
+                        run_cmd=str(tdict.get("cmd") or ""),
+                        workdir=Path(tdict.get("workdir") or "."),
+                        resource=run.resource,
+                        energy_eV=None,
+                    )
+                except Exception:
+                    pass
             running.pop(tid, None)
         return progressed
 
@@ -404,6 +421,35 @@ class Executor:
                     chosen, req = self._choose_resource(t.get("type"), resources, running)
                     if not chosen:
                         break
+                    # Cache probe before starting process
+                    try:
+                        workdir = Path(t.get("workdir"))
+                        sw = t.get("type")
+                        sw_conf = (chosen.get("software") or {}).get(sw) or {}
+                        cmd_preview, _cores_preview, _env_preview = _build_command(sw, sw_conf, workdir)
+                        from .cache import probe_cache
+                        pr = probe_cache(
+                            software=sw,
+                            bin_path=str(sw_conf.get("path")),
+                            run_cmd=cmd_preview,
+                            workdir=workdir,
+                            resource=chosen,
+                        )
+                    except Exception:
+                        pr = None
+                    if pr and pr.hit:
+                        now = time.time()
+                        t["status"] = "succeeded"
+                        t["resource"] = chosen.get("name")
+                        t["cmd"] = cmd_preview
+                        t["start_time"] = now
+                        t["end_time"] = now
+                        t["exit_code"] = 0
+                        t["cached"] = True
+                        logger.info("cache hit for %s (key=%s)", tid, pr.key)
+                        # Do not start a process; leave slot available for next task
+                        continue
+
                     pop, remote_dir, cmd, started_at = self._start_process(tid, t, chosen, req)
                     running[tid] = Running(popen=pop, task_id=tid, resource=chosen, remote_dir=remote_dir, cores=req, started_at=started_at)
                     slots -= 1
