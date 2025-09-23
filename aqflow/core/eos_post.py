@@ -30,13 +30,6 @@ from pymatgen.analysis.eos import EOS
 # Assume dependencies exist per project convention; no auto-install here.
 
 
-def _read_text(path: Path) -> str:
-    try:
-        return Path(path).read_text(errors="ignore")
-    except Exception:
-        return ""
-
-
 def _detect_software_from_combo(combination: str) -> Optional[str]:
     c = (combination or "").lower()
     if "qe" in c:
@@ -46,9 +39,7 @@ def _detect_software_from_combo(combination: str) -> Optional[str]:
     return None
 
 
-def _parse_energy_any(software: str, text: str) -> Optional[float]:
-    # Deprecated: energies come from eos.json; keep stub for compatibility
-    return None
+# Energy parsing has been moved upstream (EOS writes energies to eos.json)
 
 
 def _parse_volume_any(software: str, workdir: Path) -> Optional[float]:

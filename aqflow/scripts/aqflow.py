@@ -162,12 +162,15 @@ def cmd_eos(args: argparse.Namespace) -> int:
                     make_plots=getattr(args, "post_plot", True),
                 )
                 out = post.run()
-                pmg = (out.get("pmg_fit") or {})
-                if pmg and not pmg.get("error"):
-                    logging.getLogger("atlas-qe-workflow").info(
-                        "EOS fit (pymatgen): V0=%.3f A^3, B0=%.2f GPa, E0=%.6f eV",
-                        pmg.get('v0'), pmg.get('b0_GPa'), pmg.get('e0')
-                    )
+                # Per-curve fit summary logs
+                curves = out.get("curves") or []
+                for c in curves:
+                    pmg = c.get("pmg_fit") or {}
+                    if pmg and not pmg.get("error"):
+                        logging.getLogger("atlas-qe-workflow").info(
+                            "Curve %s | %s: V0=%.3f A^3, B0=%.2f GPa, E0=%.6f eV",
+                            c.get('structure',''), c.get('combination',''), pmg.get('v0'), pmg.get('b0_GPa'), pmg.get('e0')
+                        )
                 if out.get("plots") and not out["plots"].get("error"):
                     logging.getLogger("atlas-qe-workflow").info(
                         "Plots saved: %s , %s",

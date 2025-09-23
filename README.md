@@ -251,12 +251,16 @@ aqflow board
   - 调整刷新：`--interval 0.5`；显示行数限制：`--limit 50`
 
 - EOS 后处理：`aqflow eos-post`
-  - 从 `aqflow_data/eos.json` 解析能量与体积，拟合 EOS（默认 birch_murnaghan），并生成图像
+  - 使用 `aqflow_data/eos.json` 中的能量（由 EOS 阶段写入），解析体积并拟合 EOS（默认 birch_murnaghan），并生成图像
   - 常用参数：
     - `--eos-model birch_murnaghan|murnaghan|vinet|pourier_tarantola|anton_schmidt|natural_spline`
     - `--fit quad|none`（额外输出二次回退拟合参数）
     - `--plot/--no-plot` 是否生成图；`--abs-png/--rel-png` 图像路径
   - `aqflow eos` 结束后默认自动执行 post（可用 `--no-post` 关闭）
+  - 多曲线：按 `(structure|combination)` 分组绘制，图例会在拟合成功时显示 `B0=.. GPa`
+  - 数据文件：`eos_points.tsv` 列包含 `volume_A3`、`structure`、`combination`
+
+// 说明：EOS 阶段会调用独立的能量校验/重算接口，尽最大重试次数（默认 3）确保在 eos.json 中填充能量。
 
 - 依赖约定
   - 看板：需要 rich；后处理：需要 pymatgen 与 matplotlib；项目默认假定依赖已安装

@@ -251,12 +251,26 @@ class EosController:
         software_of = {t.task_id: t.software for t in tasks}
         # Read scheduler override for max retries (optional)
         max_retries = 3
+        # Read optional override from resources.yaml with cautious exception handling
         try:
             import yaml  # local import to avoid hard dep at module import time
-            cfg = yaml.safe_load(Path(self.resources_file).read_text())
-            max_retries = int(((cfg or {}).get("scheduler") or {}).get("verify_max_retries", 3))
-        except Exception:
-            max_retries = 3
+            try:
+                cfg_text = Path(self.resources_file).read_text()
+            except FileNotFoundError:
+                cfg_text = ""
+            if cfg_text:
+                try:
+                    cfg = yaml.safe_load(cfg_text) or {}
+                except yaml.YAMLError as e:  # type: ignore[attr-defined]
+                    logger.warning("Failed to parse resources YAML; using default verify_max_retries=3: %s", e)
+                    cfg = {}
+                try:
+                    max_retries = int(((cfg.get("scheduler") or {}).get("verify_max_retries", 3)))
+                except (ValueError, TypeError, AttributeError, KeyError) as e:
+                    logger.warning("Invalid verify_max_retries; using default 3: %s", e)
+        except ImportError:
+            # yaml not available; fallback to default
+            pass
 
         energies = ensure_energies_for_tasks(
             tasks=task_dicts,
