@@ -23,6 +23,7 @@ from .configuration import (
 )
 from dataclasses import dataclass
 from .tasks import TaskCreator, TaskDef
+from .energy import ensure_energies_for_tasks
 from .executor import Executor, BOARD_PATH
 
 logger = logging.getLogger(__name__)
@@ -240,6 +241,36 @@ class EosController:
                 if str(job_out).startswith(str(Path.cwd()))
                 else str(job_out)
             )
+        eos_model.meta.last_update = time.time()
+        self._write_eos(eos_model)
+
+        # Energy verification & collection (independent interface, default 3 retries)
+        # Build the minimal task list for the verifier (id, workdir)
+        task_dicts = [{"id": t.task_id, "workdir": str(t.work_dir)} for t in tasks]
+        # Software mapping per task
+        software_of = {t.task_id: t.software for t in tasks}
+        # Read scheduler override for max retries (optional)
+        max_retries = 3
+        try:
+            import yaml  # local import to avoid hard dep at module import time
+            cfg = yaml.safe_load(Path(self.resources_file).read_text())
+            max_retries = int(((cfg or {}).get("scheduler") or {}).get("verify_max_retries", 3))
+        except Exception:
+            max_retries = 3
+
+        energies = ensure_energies_for_tasks(
+            tasks=task_dicts,
+            software_of=software_of,
+            resources_yaml=self.resources_file,
+            board_path=BOARD_PATH,
+            max_retries=max_retries,
+        )
+
+        # Persist energies into eos.json
+        for e, t in zip(eos_model.tasks, tasks):
+            val = energies.get(t.task_id)
+            if val is not None:
+                e.energy = float(val)
         eos_model.meta.last_update = time.time()
         self._write_eos(eos_model)
         return results

@@ -20,7 +20,7 @@ import time
 import logging
 
 from .models import EosModel
-from aqflow.software.parsers import parse_energy as sw_parse_energy, parse_volume as sw_parse_volume
+from aqflow.software.parsers import parse_volume as sw_parse_volume
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -47,7 +47,8 @@ def _detect_software_from_combo(combination: str) -> Optional[str]:
 
 
 def _parse_energy_any(software: str, text: str) -> Optional[float]:
-    return sw_parse_energy(software, text)
+    # Deprecated: energies come from eos.json; keep stub for compatibility
+    return None
 
 
 def _parse_volume_any(software: str, workdir: Path) -> Optional[float]:
@@ -133,20 +134,9 @@ class EosPostProcessor:
             workdir_path = Path(t.workdir)
             if not workdir_path.is_absolute():
                 workdir_path = base_dir / workdir_path
-            # Determine software first
+            # Determine software for volume parsing; energy comes from eos.json
             software = _combination_software(model, t.combination) or "qe"
-            # Select output file per software
-            if software == "atlas":
-                job_out = workdir_path / "atlas.out"
-            else:
-                job_out = Path(t.job_out) if t.job_out else (workdir_path / "job.out")
-                if not Path(job_out).is_absolute():
-                    job_out = base_dir / job_out
-            # Read and parse
-            txt = _read_text(job_out)
-            e = _parse_energy_any(software, txt)
-            # Update in-memory model for convenience
-            t.energy = e
+            e = t.energy
             # Determine volume via software parser
             vol = _parse_volume_any(software, workdir_path)
             # Persist volume back to model so eos.json contains volume info
