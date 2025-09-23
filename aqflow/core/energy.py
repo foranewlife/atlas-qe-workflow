@@ -15,10 +15,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
+import logging
 
 from aqflow.software.parsers import parse_energy as sw_parse_energy
 from .executor import Executor, BOARD_PATH, ensure_board, save_board
 
+logger = logging.getLogger(__name__)
 
 # Candidate output files per software; first that exists is used
 ENERGY_FILES: Dict[str, List[str]] = {
@@ -54,6 +56,15 @@ def _requeue_tasks(board_path: Path, task_ids: Iterable[str]) -> None:
         t = tasks.get(tid)
         if not t:
             continue
+        # Delete per-workdir cache to force a clean recompute on retry
+        try:
+            wd = Path(t.get("workdir") or ".")
+            cache_file = wd / ".aqcache.json"
+            if cache_file.exists():
+                cache_file.unlink()
+        except Exception:
+            # best-effort; requeue proceeds regardless
+            pass
         t["status"] = "queued"
         t["resource"] = None
         t["cmd"] = None
@@ -95,6 +106,7 @@ def ensure_energies_for_tasks(
     attempt = 0
     while remaining and attempt < max(0, int(max_retries)):
         attempt += 1
+        logger.info(f"Re-queuing tasks for attempt {attempt}: {remaining}")
         _requeue_tasks(board_path, remaining)
         # Run executor once to process re-queued tasks
         ex = Executor(resources_yaml, board_path=board_path, run_meta={})
@@ -115,4 +127,3 @@ def ensure_energies_for_tasks(
         remaining = still
 
     return energies
-

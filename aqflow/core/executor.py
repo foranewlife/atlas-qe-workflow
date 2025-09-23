@@ -353,22 +353,21 @@ class Executor:
             # Update status
             self._update_status(tasks[tid], int(rc))
             # Write per-workdir cache on success
+            logger.info(f"Task {tid} finished with exit code {rc}")
             if int(rc) == 0:
                 tdict = tasks[tid]
                 sw = tdict.get("type")
                 sw_conf = (run.resource.get("software") or {}).get(sw) or {}
-                try:
-                    from .cache import write_success_cache
-                    write_success_cache(
-                        software=sw,
-                        bin_path=str(sw_conf.get("path")),
-                        run_cmd=str(tdict.get("cmd") or ""),
-                        workdir=Path(tdict.get("workdir") or "."),
-                        resource=run.resource,
-                        energy_eV=None,
-                    )
-                except Exception:
-                    pass
+                from .cache import write_success_cache
+                write_success_cache(
+                    software=sw,
+                    bin_path=str(sw_conf.get("path")),
+                    run_cmd=str(tdict.get("cmd") or ""),
+                    workdir=Path(tdict.get("workdir") or "."),
+                    resource=run.resource,
+                    energy_eV=None,
+                )
+
             running.pop(tid, None)
         return progressed
 
@@ -422,22 +421,23 @@ class Executor:
                     if not chosen:
                         break
                     # Cache probe before starting process
-                    try:
-                        workdir = Path(t.get("workdir"))
-                        sw = t.get("type")
-                        sw_conf = (chosen.get("software") or {}).get(sw) or {}
-                        cmd_preview, _cores_preview, _env_preview = _build_command(sw, sw_conf, workdir)
-                        from .cache import probe_cache
-                        pr = probe_cache(
-                            software=sw,
-                            bin_path=str(sw_conf.get("path")),
-                            run_cmd=cmd_preview,
-                            workdir=workdir,
-                            resource=chosen,
-                        )
-                    except Exception:
-                        pr = None
+
+                    workdir = Path(t.get("workdir"))
+                    sw = t.get("type")
+                    sw_conf = (chosen.get("software") or {}).get(sw) or {}
+                    cmd_preview, _cores_preview, _env_preview = _build_command(sw, sw_conf, workdir)
+                    
+                    from .cache import probe_cache
+                    pr = probe_cache(
+                        software=sw,
+                        bin_path=str(sw_conf.get("path")),
+                        run_cmd=cmd_preview,
+                        workdir=workdir,
+                        resource=chosen,
+                    )
+
                     if pr and pr.hit:
+                        logger.info(f"Cache hit for {tid} (key={pr.key})")
                         now = time.time()
                         t["status"] = "succeeded"
                         t["resource"] = chosen.get("name")

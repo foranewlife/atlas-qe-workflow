@@ -53,10 +53,10 @@ def _collect_inputs(workdir: Path) -> Tuple[List[Dict], Dict[str, int]]:
             rel = p.relative_to(wd)
             stat = p.stat()
             sha = _sha256_file(p)
+            # Do NOT include mtime in inputs_manifest per design (reduce false misses)
             entry = {
                 "path": str(rel),
                 "size": int(stat.st_size),
-                "mtime": int(stat.st_mtime),
                 "sha256": sha,
             }
             files.append(entry)
@@ -94,7 +94,7 @@ def _ssh_get_mtime(host: str, path: str, timeout: int = 5) -> Optional[int]:
     cmd = (
         f"ssh -o BatchMode=yes -o ConnectTimeout={int(timeout)} {shlex.quote(host)} "
         f"'stat -c %Y {shlex.quote(path)} 2>/dev/null || stat -f %m {shlex.quote(path)} 2>/dev/null || "
-        f"python3 -c "\"import os;print(int(os.path.getmtime(r\"{path}\")))\""'"
+        f"python3 -c \"import os;print(int(os.path.getmtime(r'{path}')))\"'"
     )
     try:
         out = subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL, timeout=timeout + 2)
@@ -208,4 +208,3 @@ def write_success_cache(*, software: str, bin_path: str, run_cmd: str, workdir: 
         "hits": 1,
     }
     _write_cache(workdir, record)
-
