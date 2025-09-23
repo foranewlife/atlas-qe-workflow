@@ -26,6 +26,7 @@ import logging
 
 import yaml
 from .models import BoardModel, BoardMeta, TaskModel
+from aqflow.software.parsers import parse_energy as _sw_parse_energy
 import platform
 from threading import Event
 import sys
@@ -246,6 +247,9 @@ class Executor:
         timeouts = cfg.get("timeouts", {})
         poll_interval = float(scheduler.get("poll_interval", 2))
         self._max_parallel = int(scheduler.get("max_parallel", 1))
+        # New: auto rerun on parse-failure knob
+        self._auto_rerun_parse_fail = bool(scheduler.get("auto_rerun_on_parse_fail", False))
+        self._max_parse_retries = int(scheduler.get("max_parse_retries", 1))
         return resources, timeouts, poll_interval
 
     def _choose_resource(self, sw: str, resources: List[Dict], running: Dict[str, Running]) -> tuple[Optional[Dict], int]:
@@ -349,9 +353,58 @@ class Executor:
                 # Plan pull and execute (side effects isolated)
                 for cmd in self._plan_pull_outputs(run, tasks[tid]):
                     self._run_shell(cmd).wait()
-            self._update_status(tasks[tid], int(rc))
+            # If exited OK, try to parse energy and optionally auto-rerun on failure
+            tdict = tasks[tid]
+            if int(rc) == 0 and self._auto_rerun_parse_fail:
+                energy = self._try_parse_energy(tdict)
+                if energy is None:
+                    retries = int(tdict.get("parse_retries", 0) or 0)
+                    if retries < max(0, self._max_parse_retries):
+                        logger.warning(
+                            "Energy parse failed for %s; auto requeue (retry %d/%d)",
+                            tid, retries + 1, self._max_parse_retries,
+                        )
+                        # Re-queue task
+                        tdict["status"] = "queued"
+                        tdict["resource"] = None
+                        tdict["cmd"] = None
+                        tdict["start_time"] = None
+                        tdict["end_time"] = None
+                        tdict["exit_code"] = None
+                        tdict["parse_retries"] = retries + 1
+                        running.pop(tid, None)
+                        progressed = True
+                        continue
+                    else:
+                        logger.error(
+                            "Energy parse still failing after %d retries for %s; marking as failed",
+                            retries, tid,
+                        )
+                        # Mark as failed with synthetic code 65 (data format error)
+                        rc = 65
+            # Normal status update path
+            self._update_status(tdict, int(rc))
             running.pop(tid, None)
         return progressed
+
+    def _try_parse_energy(self, t: Dict) -> Optional[float]:
+        """Parse energy from task outputs using software-specific parsers.
+
+        - QE: job.out
+        - ATLAS: atlas.out
+        """
+        try:
+            sw = (t.get("type") or "").lower()
+            wd = Path(t.get("workdir") or ".")
+            out = wd / ("atlas.out" if sw == "atlas" else "job.out")
+            txt = ""
+            try:
+                txt = out.read_text(errors="ignore")
+            except Exception:
+                return None
+            return _sw_parse_energy(sw, txt)
+        except Exception:
+            return None
 
     def _plan_pull_outputs(self, run: Running, task: Dict) -> list[str]:
         """Return a list of shell commands (strings) to collect remote outputs.
