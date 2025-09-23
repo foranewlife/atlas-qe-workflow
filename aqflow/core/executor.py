@@ -287,9 +287,9 @@ class Executor:
         if plan.is_remote:
             for c in plan.prep_cmds:
                 logger.info(f"Executing remote prep: {c}")
-                self._run_shell(c).wait()
-            logger.info(f"Executing remotely on {plan.host}: {plan.run_cmd}")    
-            pop = self._run_shell(plan.run_cmd)
+                self._run_shell(c, quiet=True).wait()
+            logger.info(f"Executing remotely on {plan.host}: {plan.run_cmd}")
+            pop = self._run_shell(plan.run_cmd, quiet=True)
             return pop, plan.remote_dir
         else:
             logger.info(f"Executing locally in {plan.workdir}: {plan.run_cmd}")
@@ -325,7 +325,20 @@ class Executor:
             inner = f"cd {shlex.quote(str(workdir))} && {cmd}"
         return f"ssh {shlex.quote(host)} {shlex.quote(inner)}"
 
-    def _run_shell(self, cmd: str, cwd: Optional[Path] = None, env: Optional[Dict[str, str]] = None) -> subprocess.Popen:
+    def _run_shell(self, cmd: str, cwd: Optional[Path] = None, env: Optional[Dict[str, str]] = None, *, quiet: bool = False) -> subprocess.Popen:
+        """Spawn a shell command.
+
+        If quiet=True, redirect stdout/stderr to DEVNULL to avoid breaking TUI (rich) rendering.
+        """
+        if quiet:
+            return subprocess.Popen(
+                cmd,
+                shell=True,
+                cwd=str(cwd) if cwd else None,
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
         return subprocess.Popen(cmd, shell=True, cwd=str(cwd) if cwd else None, env=env)
 
     def _poll_running(self, running: Dict[str, Running], tasks: Dict[str, Dict], timeouts: Dict) -> bool:
@@ -349,7 +362,7 @@ class Executor:
             if run.resource.get("type") == "remote":
                 # Plan pull and execute (side effects isolated)
                 for cmd in self._plan_pull_outputs(run, tasks[tid]):
-                    self._run_shell(cmd).wait()
+                    self._run_shell(cmd, quiet=True).wait()
             # Prefer energy-parse success over return code
             tdict = tasks[tid]
             sw = tdict.get("type")
