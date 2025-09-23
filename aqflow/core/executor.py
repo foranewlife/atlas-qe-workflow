@@ -350,22 +350,31 @@ class Executor:
                 # Plan pull and execute (side effects isolated)
                 for cmd in self._plan_pull_outputs(run, tasks[tid]):
                     self._run_shell(cmd).wait()
+            # Prefer energy-parse success over return code
+            tdict = tasks[tid]
+            sw = tdict.get("type")
+            wd = Path(tdict.get("workdir") or ".")
+            energy_val = None
+            try:
+                from .energy import read_energy
+                energy_val = read_energy(sw, wd)
+            except Exception:
+                energy_val = None
+            rc_used = 0 if (energy_val is not None) else int(rc)
             # Update status
-            self._update_status(tasks[tid], int(rc))
+            self._update_status(tdict, rc_used)
+            logger.info(f"Task {tid} finished with exit code {rc} (used={rc_used})")
             # Write per-workdir cache on success
-            logger.info(f"Task {tid} finished with exit code {rc}")
-            if int(rc) == 0:
-                tdict = tasks[tid]
-                sw = tdict.get("type")
+            if rc_used == 0:
                 sw_conf = (run.resource.get("software") or {}).get(sw) or {}
                 from .cache import write_success_cache
                 write_success_cache(
                     software=sw,
                     bin_path=str(sw_conf.get("path")),
                     run_cmd=str(tdict.get("cmd") or ""),
-                    workdir=Path(tdict.get("workdir") or "."),
+                    workdir=wd,
                     resource=run.resource,
-                    energy_eV=None,
+                    energy_eV=energy_val,
                 )
 
             running.pop(tid, None)
