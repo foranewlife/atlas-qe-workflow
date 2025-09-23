@@ -429,59 +429,19 @@ class Executor:
         running: Dict[str, Running] = {}
         try:
             while True:
+                # 1) 更新状态（轮询已运行任务）
                 tasks: Dict[str, Dict] = self._board.get("tasks", {})
-                running_count = sum(1 for t in tasks.values() if t.get("status") == "running")
-                slots = max(0, self._max_parallel - running_count)
-
-                while slots > 0:
-                    # Find a queued task
-                    queued = next((item for item in tasks.items() if item[1].get("status") in ("queued", "created")), None)
-                    if not queued:
-                        break
-                    tid, t = queued
-                    chosen, req = self._choose_resource(t.get("type"), resources, running)
-                    if not chosen:
-                        break
-                    # Cache probe before starting process
-
-                    workdir = Path(t.get("workdir"))
-                    sw = t.get("type")
-                    sw_conf = (chosen.get("software") or {}).get(sw) or {}
-                    cmd_preview, _cores_preview, _env_preview = _build_command(sw, sw_conf, workdir)
-                    
-                    from .cache import probe_cache
-                    pr = probe_cache(
-                        software=sw,
-                        bin_path=str(sw_conf.get("path")),
-                        run_cmd=cmd_preview,
-                        workdir=workdir,
-                        resource=chosen,
-                    )
-
-                    if pr and pr.hit:
-                        logger.info(f"Cache hit for {tid} (key={pr.key})")
-                        now = time.time()
-                        t["status"] = "succeeded"
-                        t["resource"] = chosen.get("name")
-                        t["cmd"] = cmd_preview
-                        t["start_time"] = now
-                        t["end_time"] = now
-                        t["exit_code"] = 0
-                        t["cached"] = True
-                        logger.info("cache hit for %s (key=%s)", tid, pr.key)
-                        # Do not start a process; leave slot available for next task
-                        continue
-
-                    pop, remote_dir, cmd, started_at = self._start_process(tid, t, chosen, req)
-                    running[tid] = Running(popen=pop, task_id=tid, resource=chosen, remote_dir=remote_dir, cores=req, started_at=started_at)
-                    slots -= 1
-
                 progressed = self._poll_running(running, tasks, timeouts)
+
+                # 2) 提交任务（轮询资源，能提交就提交）
+                submitted = self._submit_available(tasks, resources, running)
+
+                # 3) 错误处理/收尾
                 self._board["meta"]["last_update"] = time.time()
                 save_board(self._board_path, self._board)
                 if self._should_exit():
                     return 0
-                if not progressed and slots == 0 and running:
+                if not progressed and not submitted and running:
                     time.sleep(poll_interval)
                 else:
                     time.sleep(0.2)
@@ -489,6 +449,52 @@ class Executor:
             self._board["meta"]["last_update"] = time.time()
             save_board(self._board_path, self._board)
             return 130
+
+    def _submit_available(self, tasks: Dict[str, Dict], resources: List[Dict], running: Dict[str, Running]) -> bool:
+        """Scan queued tasks and try to submit any that fits current resource availability.
+
+        Returns True if at least one task was marked succeeded by cache or started a process.
+        """
+        submitted = False
+        queued_items = [(tid, t) for tid, t in tasks.items() if t.get("status") in ("queued", "created")]
+        if not queued_items:
+            return False
+        # Iterate once per loop iteration (no inner loop); caller will call again next tick
+        for tid, t in queued_items:
+            chosen, req = self._choose_resource(t.get("type"), resources, running)
+            if not chosen:
+                continue
+            # Cache probe before starting process
+            workdir = Path(t.get("workdir"))
+            sw = t.get("type")
+            sw_conf = (chosen.get("software") or {}).get(sw) or {}
+            cmd_preview, _cores_preview, _env_preview = _build_command(sw, sw_conf, workdir)
+            from .cache import probe_cache
+            pr = probe_cache(
+                software=sw,
+                bin_path=str(sw_conf.get("path")),
+                run_cmd=cmd_preview,
+                workdir=workdir,
+                resource=chosen,
+            )
+            if pr and pr.hit:
+                logger.info(f"Cache hit for {tid} (key={pr.key})")
+                now = time.time()
+                t["status"] = "succeeded"
+                t["resource"] = chosen.get("name")
+                t["cmd"] = cmd_preview
+                t["start_time"] = now
+                t["end_time"] = now
+                t["exit_code"] = 0
+                t["cached"] = True
+                submitted = True
+                # do not consume resource slot when cached; continue to try next queued task
+                continue
+
+            pop, remote_dir, cmd, started_at = self._start_process(tid, t, chosen, req)
+            running[tid] = Running(popen=pop, task_id=tid, resource=chosen, remote_dir=remote_dir, cores=req, started_at=started_at)
+            submitted = True
+        return submitted
 
 
 @dataclass
