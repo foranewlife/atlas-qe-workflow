@@ -183,6 +183,15 @@ results/
 - **本机**：8核，ATLAS单核，QE多核MPI
 - **并行策略**：结构×组合×体积点的三维并行
 
+### 单位约定（重要）
+
+- 本项目所有能量与体积在存储与后处理阶段均按“每原子”计：
+  - 能量：eV/atom（ATLAS 直接解析 Total Energy/atom；QE 的总能会按原子数换算）
+  - 体积：A^3/atom（总胞体积按原子数换算）
+- 输出文件：
+  - `aqflow_data/eos.json` 中 `units = { energy: eV/atom, volume: A^3/atom }`
+  - `aqflow_data/eos_points.tsv` 列名采用 `energy_eV_per_atom`、`volume_A3_per_atom`
+
 ### 软件依赖
 - **Python 3.11+**, **pymatgen** (EOS拟合)
 - **uv** 包管理
@@ -258,7 +267,7 @@ aqflow board
     - `--plot/--no-plot` 是否生成图；`--abs-png/--rel-png` 图像路径
   - `aqflow eos` 结束后默认自动执行 post（可用 `--no-post` 关闭）
   - 多曲线：按 `(structure|combination)` 分组绘制，图例会在拟合成功时显示 `B0=.. GPa`
-  - 数据文件：`eos_points.tsv` 列包含 `volume_A3`、`structure`、`combination`
+  - 数据文件：`eos_points.tsv` 列包含 `volume_A3_per_atom`、`energy_eV_per_atom`、`status`、`structure`、`combination`、`workdir`
 
 // 说明：EOS 阶段会调用独立的能量校验/重算接口，尽最大重试次数（默认 3）确保在 eos.json 中填充能量。
 

@@ -8,7 +8,7 @@ def test_board_model_roundtrip():
     meta = BoardMeta(
         run_id="run_001",
         root="/tmp",
-        resources_file="config/resources.yaml",
+        resources_file="/tmp/resources.yaml",
         tool="eos",
         args=["aqflow", "eos"],
         start_time=now,

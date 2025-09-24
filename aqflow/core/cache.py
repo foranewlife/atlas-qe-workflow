@@ -16,7 +16,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shlex
 import subprocess
 import time
 from dataclasses import dataclass
@@ -92,8 +91,8 @@ def _local_bin_signature(path: str) -> Optional[Dict]:
 def _ssh_get_mtime(host: str, path: str, timeout: int = 5) -> Optional[int]:
     # Compatible across GNU/BSD stat; fallback to python
     cmd = (
-        f"ssh -o BatchMode=yes -o ConnectTimeout={int(timeout)} {shlex.quote(host)} "
-        f"'stat -c %Y {shlex.quote(path)} 2>/dev/null || stat -f %m {shlex.quote(path)} 2>/dev/null || "
+        f"ssh -o BatchMode=yes -o ConnectTimeout={int(timeout)} {host} "
+        f"'stat -c %Y {path} 2>/dev/null || stat -f %m {path} 2>/dev/null || "
         f"python3 -c \"import os;print(int(os.path.getmtime(r'{path}')))\"'"
     )
     try:

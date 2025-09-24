@@ -47,48 +47,92 @@ def parse_qe_energy(text: str) -> Optional[float]:
 
 
 def parse_atlas_energy(text: str) -> Optional[float]:
-    """Parse ATLAS energy from job.out text.
-
-    Fallback order:
-    - "Total Energy" or generic "energy" style lines if present
-    - TN iteration table: use the last row's Energy(eV/atom) and return that value (per-atom)
-      Note: callers needing total energy should multiply by atom count.
-    """
-    # 1) Try explicit labeled energies first
-    m = re.search(r"Total\s+Energy\s*[:=]\s*([-+0-9.Ee]+)\s*(eV|Ry)?", text, re.IGNORECASE)
+    """Parse ATLAS per-atom energy strictly from 'Total Energy/atom = ...' (eV/atom)."""
+    m = re.search(r"Total\s+Energy/atom\s*[:=]\s*([-+0-9.Ee]+)", text, re.IGNORECASE)
     if not m:
-        m = re.search(r"\benergy\s*[:=]\s*([-+0-9.Ee]+)\s*(eV|Ry)?", text, re.IGNORECASE)
-    if m:
-        val = float(m.group(1))
-        unit = (m.group(2) or "eV").strip()
-        return val * RY_TO_EV if unit.lower() == "ry" else val
+        return None
+    return float(m.group(1))
 
-    # 2) Parse TN table rows
-    # Header example: Method    N     Energy(Ha)          Energy(eV/atom)           dE(eV/atom)
-    # Row example:   TN    :     9     0.181688117400E+01    0.617998128360E+01  -0.89672E-09
-    rows = re.findall(r"^[A-Za-z]+\s*:\s*\d+\s+([0-9.+\-Ee]+)\s+([0-9.+\-Ee]+)\s+([0-9.+\-Ee]+)", text, re.MULTILINE)
-    if rows:
-        # Return Energy(eV/atom) from the last iteration
-        epa = float(rows[-1][1])
-        return epa
-    return None
+
+# Note: Removed ATLAS detail parser and any 'Ry' handling per user request.
 
 
 # ---------------- Volume ----------------
 
+def _count_atoms_from_poscar_text(text: str) -> Optional[int]:
+    try:
+        if not text:
+            return None
+        lines = text.splitlines()
+        if len(lines) < 7:
+            return None
+        parts = lines[6].split()
+        counts = []
+        for x in parts:
+            try:
+                counts.append(int(float(x)))
+            except Exception:
+                return None
+        return sum(counts) if counts else None
+    except Exception:
+        return None
+
+
 def parse_volume(software: str, workdir: Path) -> Optional[float]:
     software = (software or "").lower()
     if software == "qe":
-        # Try job.out, then qe.in
-        v = parse_qe_volume_from_job_out(_read_text(Path(workdir) / "job.out"))
+        # Prefer qe.in CELL_PARAMETERS (intended geometry); fallback to job.out
+        v = parse_qe_volume_from_input(_read_text(Path(workdir) / "qe.in"))
         if v is None:
-            v = parse_qe_volume_from_input(_read_text(Path(workdir) / "qe.in"))
-        return v
+            v = parse_qe_volume_from_job_out(_read_text(Path(workdir) / "job.out"))
+        if v is None:
+            return None
+        nat = _count_atoms_from_qe_in_text(_read_text(Path(workdir) / "qe.in"))
+        if nat and nat > 0:
+            return v / float(nat)
+        return None
     if software == "atlas":
-        # Prefer POSCAR in workdir
-        return parse_volume_from_poscar(_read_text(Path(workdir) / "POSCAR"))
+        # Per-atom volume for ATLAS: POSCAR cell volume divided by natoms
+        poscar_text = _read_text(Path(workdir) / "POSCAR")
+        vcell = parse_volume_from_poscar(poscar_text)
+        if vcell is None:
+            return None
+        nat = _count_atoms_from_poscar_text(poscar_text)
+        if nat and nat > 0:
+            return vcell / float(nat)
+        return None
     # default: try POSCAR if present
     return parse_volume_from_poscar(_read_text(Path(workdir) / "POSCAR"))
+
+
+def _count_atoms_from_qe_in_text(text: str) -> Optional[int]:
+    try:
+        if not text:
+            return None
+        lines = text.splitlines()
+        start = None
+        for i, ln in enumerate(lines):
+            if ln.strip().lower().startswith("atomic_positions"):
+                start = i + 1
+                break
+        if start is None:
+            return None
+        n = 0
+        for ln in lines[start:]:
+            s = ln.strip()
+            if not s:
+                break
+            parts = s.split()
+            if len(parts) < 4:
+                break
+            try:
+                float(parts[-1]); float(parts[-2]); float(parts[-3])
+            except Exception:
+                break
+            n += 1
+        return n if n > 0 else None
+    except Exception:
+        return None
 
 
 def parse_qe_volume_from_job_out(text: str) -> Optional[float]:

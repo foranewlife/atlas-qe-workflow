@@ -40,7 +40,7 @@ def submit_task(software: str, work_dir: Path, resources: Path) -> int:
     """Submit current directory as a single task to the executor.
 
     No template or input pre-check here; executor will run with software defaults
-    (QE: '-in qe.in' fallback to 'job.in'; ATLAS: binary > job.out)."""
+    (QE: '< qe.in' fallback to 'job.in'; ATLAS: binary > job.out)."""
     work_dir = work_dir.resolve()
     # Append task to board.json
     resources = Path(resources).resolve()

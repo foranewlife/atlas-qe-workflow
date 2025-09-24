@@ -6,7 +6,7 @@ Inputs:
 
 Outputs (under aqflow_data/ by default):
 - eos_post.json: multi-curve structured data (per-curve points + fits)
-- eos_points.tsv: tabular data with columns: volume_scale, volume_A3, energy_eV, status, structure, combination, workdir
+- eos_points.tsv: tabular data with columns: volume_scale, volume_A3_per_atom, energy_eV_per_atom, status, structure, combination, workdir
 - eos_curve.png / eos_curve_relative.png: absolute and relative EOS curves (multi-curve overlay)
 """
 
@@ -303,8 +303,8 @@ class EosPostProcessor:
 
             # Decorate and save
             for ax in (ax_abs,):
-                ax.set_xlabel("Volume (Ang^3)", fontsize=14)
-                ax.set_ylabel("Energy (eV)", fontsize=14)
+                ax.set_xlabel("Volume (A^3/atom)", fontsize=14)
+                ax.set_ylabel("Energy (eV/atom)", fontsize=14)
                 ax.set_title("Equation of State (EOS) Curves", fontsize=16)
                 ax.legend(fontsize=10)
                 ax.grid(True, alpha=0.3)
@@ -314,8 +314,8 @@ class EosPostProcessor:
             plt.close(fig_abs)
 
             for ax in (ax_rel,):
-                ax.set_xlabel("Volume (Ang^3)", fontsize=14)
-                ax.set_ylabel("Energy - E0 (eV)", fontsize=14)
+                ax.set_xlabel("Volume (A^3/atom)", fontsize=14)
+                ax.set_ylabel("Energy - E0 (eV/atom)", fontsize=14)
                 ax.set_title("EOS Curves Relative to Equilibrium Energy", fontsize=16)
                 ax.legend(fontsize=10)
                 ax.grid(True, alpha=0.3)
@@ -339,9 +339,9 @@ class EosPostProcessor:
         tmp.write_text(json.dumps(out_obj, indent=2))
         tmp.replace(self.out_json)
 
-        # Persist tsv (richer columns)
+        # Persist tsv (richer columns; per-atom units)
         with open(self.out_tsv, "w") as fh:
-            fh.write("volume_scale\tvolume_A3\tenergy_eV\tstatus\tstructure\tcombination\tworkdir\n")
+            fh.write("volume_scale\tvolume_A3_per_atom\tenergy_eV_per_atom\tstatus\tstructure\tcombination\tworkdir\n")
             for p in all_points:
                 e = "" if p["energy_eV"] is None else f"{p['energy_eV']:.9f}"
                 v = "" if p.get("volume_A3") is None else f"{p['volume_A3']:.6f}"

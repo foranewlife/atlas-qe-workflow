@@ -211,7 +211,8 @@ class EosController:
                 last_update=time.time(),
             ),
             schema_version=1,
-            units={"energy": "eV", "volume": "A^3"},
+            # Per-atom convention
+            units={"energy": "eV/atom", "volume": "A^3/atom"},
             run={
                 "root": str(Path.cwd()),
                 "resources_file": str(self.resources_file.resolve()),
@@ -225,6 +226,29 @@ class EosController:
         self._write_eos(eos_model)
 
         ex.run()
+
+        # Energy verification & collection (independent interface, default 3 retries)
+        # Build the minimal task list for the verifier (id, workdir)
+        task_dicts = [{"id": t.task_id, "workdir": str(t.work_dir)} for t in tasks]
+        # Software mapping per task
+        software_of = {t.task_id: t.software for t in tasks}
+        # Read scheduler override for max retries (optional)
+        max_retries = 3
+        
+        energies = ensure_energies_for_tasks(
+            tasks=task_dicts,
+            software_of=software_of,
+            resources_yaml=self.resources_file,
+            board_path=BOARD_PATH,
+            max_retries=max_retries,
+        )
+
+        # Persist energies into eos.json
+        for e, t in zip(eos_model.tasks, tasks):
+            val = energies.get(t.task_id)
+            if val is not None:
+                e.energy = float(val)
+        eos_model.meta.last_update = time.time()
 
         # Build results based on job.out presence
         results: List[RunResult] = []
@@ -242,51 +266,9 @@ class EosController:
                 else str(job_out)
             )
         eos_model.meta.last_update = time.time()
+        
         self._write_eos(eos_model)
 
-        # Energy verification & collection (independent interface, default 3 retries)
-        # Build the minimal task list for the verifier (id, workdir)
-        task_dicts = [{"id": t.task_id, "workdir": str(t.work_dir)} for t in tasks]
-        # Software mapping per task
-        software_of = {t.task_id: t.software for t in tasks}
-        # Read scheduler override for max retries (optional)
-        max_retries = 3
-        # Read optional override from resources.yaml with cautious exception handling
-        try:
-            import yaml  # local import to avoid hard dep at module import time
-            try:
-                cfg_text = Path(self.resources_file).read_text()
-            except FileNotFoundError:
-                cfg_text = ""
-            if cfg_text:
-                try:
-                    cfg = yaml.safe_load(cfg_text) or {}
-                except yaml.YAMLError as e:  # type: ignore[attr-defined]
-                    logger.warning("Failed to parse resources YAML; using default verify_max_retries=3: %s", e)
-                    cfg = {}
-                try:
-                    max_retries = int(((cfg.get("scheduler") or {}).get("verify_max_retries", 3)))
-                except (ValueError, TypeError, AttributeError, KeyError) as e:
-                    logger.warning("Invalid verify_max_retries; using default 3: %s", e)
-        except ImportError:
-            # yaml not available; fallback to default
-            pass
-
-        energies = ensure_energies_for_tasks(
-            tasks=task_dicts,
-            software_of=software_of,
-            resources_yaml=self.resources_file,
-            board_path=BOARD_PATH,
-            max_retries=max_retries,
-        )
-
-        # Persist energies into eos.json
-        for e, t in zip(eos_model.tasks, tasks):
-            val = energies.get(t.task_id)
-            if val is not None:
-                e.energy = float(val)
-        eos_model.meta.last_update = time.time()
-        self._write_eos(eos_model)
         return results
 
 

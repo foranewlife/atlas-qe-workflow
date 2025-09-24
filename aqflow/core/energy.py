@@ -25,7 +25,8 @@ logger = logging.getLogger(__name__)
 # Candidate output files per software; first that exists is used
 ENERGY_FILES: Dict[str, List[str]] = {
     "qe": ["job.out"],
-    "atlas": ["atlas.out", "job.out"],
+    # Per user: ATLAS energy must be parsed only from atlas.out (Total Energy ...)
+    "atlas": ["atlas.out"],
 }
 
 
@@ -41,11 +42,68 @@ def read_energy(software: str, workdir: Path) -> Optional[float]:
     software = (software or "").lower()
     for fn in ENERGY_FILES.get(software, ["job.out"]):
         out = Path(workdir) / fn
-        if out.exists():
-            val = sw_parse_energy(software, _read_text(out))
+        if not out.exists():
+            continue
+        text = _read_text(out)
+        if software == "atlas":
+            # Strict: only accept 'Total Energy/atom =' line from atlas.out; value is eV/atom
+            from aqflow.software.parsers import parse_atlas_energy
+            val = parse_atlas_energy(text)
             if val is not None:
                 return float(val)
+            continue
+        else:
+            # QE and others: sw_parse_energy returns total energy (eV); convert to per-atom for QE
+            val = sw_parse_energy(software, text)
+            if val is None:
+                continue
+            if software == "qe":
+                # Count atoms from qe.in (ATOMIC_POSITIONS section)
+                qein = Path(workdir) / "qe.in"
+                try:
+                    qtxt = qein.read_text(errors="ignore") if qein.exists() else ""
+                except Exception:
+                    qtxt = ""
+                nat = _count_atoms_from_qe_in_text(qtxt)
+                if nat and nat > 0:
+                    return float(val) / float(nat)
+                else:
+                    logger.warning("QE per-atom energy requested but natoms could not be determined from qe.in; returning None")
+                    return None
+            return float(val)
     return None
+
+
+def _count_atoms_from_qe_in_text(text: str) -> Optional[int]:
+    try:
+        if not text:
+            return None
+        lines = text.splitlines()
+        # Find ATOMIC_POSITIONS header
+        start = None
+        for i, ln in enumerate(lines):
+            if ln.strip().lower().startswith("atomic_positions"):
+                start = i + 1
+                break
+        if start is None:
+            return None
+        n = 0
+        for ln in lines[start:]:
+            s = ln.strip()
+            if not s:
+                break
+            parts = s.split()
+            if len(parts) < 4:
+                break
+            # try parse last three as floats
+            try:
+                float(parts[-1]); float(parts[-2]); float(parts[-3])
+            except Exception:
+                break
+            n += 1
+        return n if n > 0 else None
+    except Exception:
+        return None
 
 
 def _requeue_tasks(board_path: Path, task_ids: Iterable[str]) -> None:

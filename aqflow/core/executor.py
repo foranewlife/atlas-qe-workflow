@@ -26,11 +26,8 @@ import logging
 
 import yaml
 from .models import BoardModel, BoardMeta, TaskModel
-from aqflow.software.parsers import parse_energy as _sw_parse_energy
-import platform
 from threading import Event
 import sys
-import subprocess
 try:
     import fcntl  # POSIX file locking
     _HAVE_FCNTL = True
@@ -314,15 +311,15 @@ class Executor:
     def _plan_remote_prep(self, host: str, remote_dir: Optional[str], workdir: Path) -> list[str]:
         cmds: list[str] = []
         if remote_dir:
-            cmds.append(f"ssh {shlex.quote(host)} {shlex.quote('mkdir -p ' + shlex.quote(remote_dir))}")
+            cmds.append(f"ssh {shlex.quote(host)} {shlex.quote('mkdir -p ' + remote_dir)}")
             cmds.append(f"scp -r {shlex.quote(str(workdir))}/* {shlex.quote(host)}:{shlex.quote(remote_dir)}/")
         return cmds
 
     def _plan_remote_run(self, host: str, remote_dir: Optional[str], workdir: Path, cmd: str) -> str:
         if remote_dir:
-            inner = f"cd {shlex.quote(remote_dir)} && {cmd}"
+            inner = f"cd {remote_dir} && {cmd}"
         else:
-            inner = f"cd {shlex.quote(str(workdir))} && {cmd}"
+            inner = f"cd {str(workdir)} && {cmd}"
         return f"ssh {shlex.quote(host)} {shlex.quote(inner)}"
 
     def _run_shell(self, cmd: str, cwd: Optional[Path] = None, env: Optional[Dict[str, str]] = None, *, quiet: bool = False) -> subprocess.Popen:
@@ -362,6 +359,10 @@ class Executor:
             if run.resource.get("type") == "remote":
                 # Plan pull and execute (side effects isolated)
                 for cmd in self._plan_pull_outputs(run, tasks[tid]):
+                    self._run_shell(cmd, quiet=True).wait()
+                # After pulling outputs, cleanup remote working directory
+                for cmd in self._plan_remote_cleanup(run):
+                    logger.info(f"Executing remote cleanup: {cmd}")
                     self._run_shell(cmd, quiet=True).wait()
             # Prefer energy-parse success over return code
             tdict = tasks[tid]
@@ -407,12 +408,27 @@ class Executor:
         pull_all = bool(transfer.get("pull_all", False))
         if pull_all:
             cmds.append(
-                f"scp -r {shlex.quote(host)}:{shlex.quote(run.remote_dir)}/* {shlex.quote(task['workdir'])}/"
+            f"scp -r {host}:{run.remote_dir}/* {task['workdir']}/"
             )
         else:
             cmds.append(
-                f"scp {shlex.quote(host)}:{shlex.quote(run.remote_dir)}/job.out {shlex.quote(task['workdir'])}/job.out"
+            f"scp {host}:{run.remote_dir}/job.out {task['workdir']}/job.out"
             )
+        return cmds
+
+    def _plan_remote_cleanup(self, run: Running) -> list[str]:
+        """Return commands to delete remote working directory after outputs are pulled.
+
+        Safety: only act if remote_dir is set.
+        """
+
+        cmds: list[str] = []
+        if not run.remote_dir:
+            return cmds
+        host = _remote_host(run.resource)
+        cmds.append(
+            f"ssh {host} 'rm -rf {run.remote_dir}'"
+        )
         return cmds
 
     def _update_status(self, task: Dict, rc: int) -> None:
@@ -456,11 +472,20 @@ class Executor:
         Returns True if at least one task was marked succeeded by cache or started a process.
         """
         submitted = False
+        # Respect global scheduler limit
+        try:
+            max_par = int(getattr(self, "_max_parallel", 0) or 0)
+        except Exception:
+            max_par = 0
+        if max_par and len(running) >= max_par:
+            return False
         queued_items = [(tid, t) for tid, t in tasks.items() if t.get("status") in ("queued", "created")]
         if not queued_items:
             return False
         # Iterate once per loop iteration (no inner loop); caller will call again next tick
         for tid, t in queued_items:
+            if max_par and len(running) >= max_par:
+                break
             chosen, req = self._choose_resource(t.get("type"), resources, running)
             if not chosen:
                 continue
@@ -511,7 +536,7 @@ def _build_command(software: str, sw_conf: Dict, workdir: Path) -> Tuple[str, in
     """Return (command_string, cores, env_vars). Applies mpi wrapper when needed.
 
     Important: atlas does NOT use '< atlas.in'; per user, run as 'atlas.x > job.out 2>&1'.
-    qe uses '-in <file>'.
+    qe uses '< <file>'.
     """
     bin_path = sw_conf.get("path")
     if not bin_path:
@@ -522,7 +547,7 @@ def _build_command(software: str, sw_conf: Dict, workdir: Path) -> Tuple[str, in
 
     if software == "qe":
         inp = "qe.in" if (workdir / "qe.in").exists() else "job.in"
-        base = f"{bin_path} -in {inp}"
+        base = f"{bin_path} < {inp}"
     elif software == "atlas":
         # No stdin redirection
         base = f"{bin_path}"
@@ -533,7 +558,7 @@ def _build_command(software: str, sw_conf: Dict, workdir: Path) -> Tuple[str, in
     if mpi and cores > 1:
         base = f"{mpi} -np {cores} {base}"
 
-    cmd = f"{base} > job.out 2>&1"
+    cmd = f"OMP_NUM_THREADS=1 {base} > job.out 2>&1"
     return cmd, cores, env
 
 
@@ -602,21 +627,11 @@ def _fmt_elapsed(sec: int) -> str:
 
 
 def _ensure_rich() -> None:
-    """Ensure 'rich' is available; if missing, install via 'uv pip install rich'."""
-    try:
-        import rich  # noqa: F401
-        return
-    except Exception:
-        # Best-effort install using uv; ignore failure so we raise import error below
-        try:
-            subprocess.run(["uv", "pip", "install", "rich"], check=False)
-        except Exception:
-            pass
-    # Re-import or fail with clear error
+    """Assert that 'rich' is importable; do not attempt auto-install."""
     try:
         import rich  # noqa: F401
     except Exception as e:
-        raise RuntimeError("'rich' is required for aqflow board. Please install with: uv pip install rich") from e
+        raise RuntimeError("'rich' is required for aqflow board. Please install it in your environment.") from e
     
 
 
