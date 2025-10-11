@@ -37,6 +37,18 @@ except Exception:
 # write log
 logger = logging.getLogger(__name__)    
 
+# Manual handling markers inside a task working directory.
+# If any of these files exist, the executor will not launch the binary
+# and will instead parse energy and mark the task as succeeded/failed accordingly.
+_MANUAL_MARKERS = (".aqmanual", ".aq_manual")
+
+def _has_manual_marker(workdir: Path) -> bool:
+    try:
+        wd = Path(workdir)
+        return any((wd / m).exists() for m in _MANUAL_MARKERS)
+    except Exception:
+        return False
+
 def _is_writable_dir(d: Path) -> bool:
     try:
         d.mkdir(parents=True, exist_ok=True)
@@ -221,6 +233,8 @@ class Executor:
         self.resources_yaml = Path(resources_yaml)
         self._board_path = Path(board_path) if board_path else Path.cwd() / BOARD_PATH
         self._board = ensure_board(self._board_path, meta=run_meta or {"resources_file": str(self.resources_yaml)})
+        self._run_started_at: Optional[float] = None
+        self._overall_timeout_sec: Optional[float] = None
 
     @property
     def board_path(self) -> Path:
@@ -244,6 +258,8 @@ class Executor:
         timeouts = cfg.get("timeouts", {})
         poll_interval = float(scheduler.get("poll_interval", 2))
         self._max_parallel = int(scheduler.get("max_parallel", 1))
+        # Diagnostics: remember start time only
+        self._run_started_at = time.time()
         return resources, timeouts, poll_interval
 
     def _choose_resource(self, sw: str, resources: List[Dict], running: Dict[str, Running]) -> tuple[Optional[Dict], int]:
@@ -283,13 +299,13 @@ class Executor:
     def _execute_plan(self, plan: "Executor.ExecutionPlan") -> tuple[subprocess.Popen, Optional[str]]:
         if plan.is_remote:
             for c in plan.prep_cmds:
-                logger.info(f"Executing remote prep: {c}")
+                logger.debug(f"Executing remote prep: {c}")
                 self._run_shell(c, quiet=True).wait()
-            logger.info(f"Executing remotely on {plan.host}: {plan.run_cmd}")
+            logger.debug(f"Executing remotely on {plan.host}: {plan.run_cmd}")
             pop = self._run_shell(plan.run_cmd, quiet=True)
             return pop, plan.remote_dir
         else:
-            logger.info(f"Executing locally in {plan.workdir}: {plan.run_cmd}")
+            logger.debug(f"Executing locally in {plan.workdir}: {plan.run_cmd}")
             pop = subprocess.Popen(plan.run_cmd, shell=True, cwd=str(plan.workdir), env=plan.env)
             return pop, None
 
@@ -442,14 +458,18 @@ class Executor:
 
     def run(self) -> int:
         resources, timeouts, poll_interval = self._load_resources()
+        self._run_started_at = time.time()
+        logger.debug(f"Executor started with max_parallel={getattr(self, '_max_parallel', 'N/A')}, resources={len(resources)}")
         running: Dict[str, Running] = {}
         try:
             while True:
                 # 1) 更新状态（轮询已运行任务）
                 tasks: Dict[str, Dict] = self._board.get("tasks", {})
+                logger.debug(f"Tasks: {len(tasks)}, Running: {len(running)}")
                 progressed = self._poll_running(running, tasks, timeouts)
 
                 # 2) 提交任务（轮询资源，能提交就提交）
+                logger.debug(f"Attempting to submit new tasks; currently running: {len(running)}")
                 submitted = self._submit_available(tasks, resources, running)
 
                 # 3) 错误处理/收尾
@@ -457,10 +477,11 @@ class Executor:
                 save_board(self._board_path, self._board)
                 if self._should_exit():
                     return 0
+                logger.debug(f"Progressed: {progressed}, Submitted: {submitted}, Running: {len(running)}")
                 if not progressed and not submitted and running:
+                    # logger.debug(f"Progressed: {progressed}, Submitted: {submitted}, Running: {len(running)}")
                     time.sleep(poll_interval)
-                else:
-                    time.sleep(0.2)
+
         except KeyboardInterrupt:
             self._board["meta"]["last_update"] = time.time()
             save_board(self._board_path, self._board)
@@ -484,16 +505,68 @@ class Executor:
             return False
         # Iterate once per loop iteration (no inner loop); caller will call again next tick
         for tid, t in queued_items:
+            logger.debug(f"Considering task {tid} for submission")
             if max_par and len(running) >= max_par:
                 break
+            # If this task type is not supported by any resource, fail fast to avoid infinite waiting
+            try:
+                sw_type = (t.get("type") or "").lower()
+                sup = getattr(self, "_supported_software", set())
+                if sw_type and sup and (sw_type not in sup):
+                    now = time.time()
+                    t["resource"] = None
+                    t["cmd"] = None
+                    t["start_time"] = now
+                    t["end_time"] = now
+                    t["exit_code"] = 127
+                    t["status"] = "failed"
+                    logger.error(f"No resource supports software '{sw_type}' for task {tid}; marking failed.")
+                    submitted = True
+                    continue
+            except Exception:
+                pass
+            # Manual handling: if marker file exists in workdir, do not launch processes.
+            # Parse energy; if present -> mark succeeded; else -> mark failed.
+            try:
+                wd_manual = Path(t.get("workdir") or ".")
+                if _has_manual_marker(wd_manual):
+                    logger.debug(f"Manual marker found for {tid} in {wd_manual}; parsing energy without execution")
+                    energy_val = None
+                    try:
+                        from .energy import read_energy
+                        sw = t.get("type")
+                        energy_val = read_energy(sw, wd_manual)
+                    except Exception:
+                        energy_val = None
+                    now = time.time()
+                    t["resource"] = "manual"
+                    t["cmd"] = "manual"
+                    t["start_time"] = now
+                    t["end_time"] = now
+                    if energy_val is not None:
+                        t["exit_code"] = 0
+                        t["status"] = "succeeded"
+                        logger.info(f"Manual task {tid} succeeded (energy parsed)")
+                    else:
+                        t["exit_code"] = 1
+                        t["status"] = "failed"
+                        logger.warning(f"Manual task {tid} failed (energy not parsed)")
+                    submitted = True
+                    # Do not attempt to allocate resources for this task
+                    continue
+            except Exception as ex:
+                logger.error(f"Manual handling check failed for {tid}: {ex}")
             chosen, req = self._choose_resource(t.get("type"), resources, running)
             if not chosen:
+                logger.debug(f"No available resource for task {tid} (type={t.get('type')}); will retry later")
                 continue
+            logger.info(f"Chosen resource {chosen.get('name')} for task {tid} (requires {req} cores)")
             # Cache probe before starting process
             workdir = Path(t.get("workdir"))
             sw = t.get("type")
             sw_conf = (chosen.get("software") or {}).get(sw) or {}
             cmd_preview, _cores_preview, _env_preview = _build_command(sw, sw_conf, workdir)
+            logger.debug(f"Probing cache for task {tid} with command: {cmd_preview}")
             from .cache import probe_cache
             pr = probe_cache(
                 software=sw,
@@ -502,6 +575,7 @@ class Executor:
                 workdir=workdir,
                 resource=chosen,
             )
+            logger.debug(f"Cache probe result for {tid}: hit={pr.hit if pr else 'N/A'}, key={pr.key if pr else 'N/A'}")
             if pr and pr.hit:
                 logger.info(f"Cache hit for {tid} (key={pr.key})")
                 now = time.time()
@@ -818,12 +892,40 @@ def render_global_board_once(*, show_all: bool, group_by: Optional[str], filters
     return console.export_text(clear=False)
 
 
-def watch_single_board(board_path: Path, stop: Optional[Event] = None, interval: float = 0.5) -> None:
-    """Watch a single board.json and render until completion or stop set (Rich-based)."""
+def _read_log_tail(path: Path, max_lines: int = 200) -> str:
+    try:
+        text = Path(path).read_text(errors="ignore")
+    except Exception:
+        return ""
+    lines = text.splitlines()
+    if max_lines <= 0:
+        return text
+    return "\n".join(lines[-max_lines:])
+
+
+def watch_single_board(
+    board_path: Path,
+    stop: Optional[Event] = None,
+    interval: float = 0.5,
+    show_logs: bool = False,
+    log_path: Optional[Path] = None,
+    log_lines: int = 200,
+) -> None:
+    """Watch a single board.json and render until completion or stop set (Rich-based).
+
+    When show_logs=True, the screen is split vertically: top = tasks board,
+    bottom = tail of the log file.
+    """
     _ensure_rich()
     from rich.console import Console, Group
     from rich.live import Live
     from rich.text import Text
+    from rich.panel import Panel
+    from rich.layout import Layout
+    from pathlib import Path as _Path
+
+    if log_path is None:
+        log_path = _Path.cwd() / "aqflow_data" / "aqflow.log"
     def done(statuses: List[str]) -> bool:
         return statuses and not any(s in ("queued", "created", "running") for s in statuses)
 
@@ -844,7 +946,21 @@ def watch_single_board(board_path: Path, stop: Optional[Event] = None, interval:
                     header = Text(f"aqflow run - {ts}  (watching {board_path})", style="bold")
                     progress = _build_progress(items)
                     renderables = _build_rich_tables(items, show_all=False, group_by=None, filters=[])
-                    live.update(Group(header, progress, *renderables), refresh=True)
+                    top = Group(header, progress, *renderables)
+                    if show_logs:
+                        log_text = _read_log_tail(log_path, max_lines=log_lines)
+                        panel = Panel.fit(log_text or "(no logs)", title=f"Logs tail ({log_lines})", border_style="dim")
+                        layout = Layout()
+                        # Split 50/50 vertically (top tasks, bottom logs)
+                        layout.split_column(
+                            Layout(name="top", ratio=1),
+                            Layout(name="bottom", ratio=1),
+                        )
+                        layout["top"].update(top)
+                        layout["bottom"].update(panel)
+                        live.update(layout, refresh=True)
+                    else:
+                        live.update(top, refresh=True)
                     if data:
                         statuses = [t.get("status") for t in (data.get("tasks") or {}).values()]
                         if done(statuses):
@@ -857,5 +973,3 @@ def watch_single_board(board_path: Path, stop: Optional[Event] = None, interval:
             sys.stdout.write("\x1b[?25h"); sys.stdout.flush()
         except Exception:
             pass
-    if stop:
-        stop.set()

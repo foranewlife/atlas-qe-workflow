@@ -22,6 +22,9 @@ import logging
 from .models import EosModel
 from aqflow.software.parsers import parse_volume as sw_parse_volume
 import numpy as np
+import matplotlib
+# Force non-interactive backend to avoid any GUI/blocking behavior
+matplotlib.use("Agg", force=True)
 import matplotlib.pyplot as plt
 
 logger = logging.getLogger(__name__)
@@ -121,6 +124,9 @@ class EosPostProcessor:
         except Exception:
             base_dir = Path(self.eos_json).parent
         for t in model.tasks:
+            # Only consider succeeded tasks; ignore failed/timeout by design
+            if (t.status or "").lower() != "succeeded":
+                continue
             # Resolve workdir
             workdir_path = Path(t.workdir)
             if not workdir_path.is_absolute():
@@ -165,11 +171,15 @@ class EosPostProcessor:
         # Per-curve fits
         curves_out: List[Dict] = []
         for key, cur in curves.items():
+            # Only successful points were added above; still ensure energy exists
             pts_ok = [p for p in cur["points"] if p["energy_eV"] is not None]
             xs: List[float] = [float(p["volume_scale"]) for p in pts_ok]
             ys: List[float] = [float(p["energy_eV"]) for p in pts_ok]
             vols: List[float] = [float(p["volume_A3"]) for p in pts_ok if p["volume_A3"] is not None]
-
+            # Skip this curve if there are <= 3 successful points
+            if len(xs) <= 3:
+                logger.warning(f"Skipping curve {key}: only {len(xs)} successful points (<= 3)")
+                continue
             fit_result: Dict[str, Optional[float] | str | int] = {"method": self.fit}
             if self.fit == "quad" and len(xs) >= 3:
                 sol = _polyfit_quadratic(xs, ys)
@@ -221,10 +231,9 @@ class EosPostProcessor:
 
         # Plotting (absolute and relative) with multiple curves
         if self.make_plots and curves_out:
-            # Absolute energy plot
-            fig_abs, ax_abs = plt.subplots()
-            # Relative energy plot
-            fig_rel, ax_rel = plt.subplots()
+            # Absolute/Relative plots with auto spacing; give a reasonable base size
+            fig_abs, ax_abs = plt.subplots(figsize=(9, 6))
+            fig_rel, ax_rel = plt.subplots(figsize=(9, 6))
 
             # Choose colors
             n = max(1, len(curves_out))
@@ -306,23 +315,34 @@ class EosPostProcessor:
                 ax.set_xlabel("Volume (A^3/atom)", fontsize=14)
                 ax.set_ylabel("Energy (eV/atom)", fontsize=14)
                 ax.set_title("Equation of State (EOS) Curves", fontsize=16)
-                ax.legend(fontsize=10)
+                # Place legend to the right (outside) so it never covers the curves
+                ax.legend(
+                    fontsize=10,
+                    loc="center left",
+                    bbox_to_anchor=(1.02, 0.5),
+                    frameon=False,
+                    borderaxespad=0.0,
+                )
                 ax.grid(True, alpha=0.3)
-            fig_abs.tight_layout()
             self.abs_png.parent.mkdir(parents=True, exist_ok=True)
-            fig_abs.savefig(self.abs_png, dpi=300)
+            fig_abs.savefig(self.abs_png, dpi=300, bbox_inches="tight", pad_inches=0.1)
             plt.close(fig_abs)
 
             for ax in (ax_rel,):
                 ax.set_xlabel("Volume (A^3/atom)", fontsize=14)
                 ax.set_ylabel("Energy - E0 (eV/atom)", fontsize=14)
                 ax.set_title("EOS Curves Relative to Equilibrium Energy", fontsize=16)
-                ax.legend(fontsize=10)
+                ax.legend(
+                    fontsize=10,
+                    loc="center left",
+                    bbox_to_anchor=(1.02, 0.5),
+                    frameon=False,
+                    borderaxespad=0.0,
+                )
                 ax.grid(True, alpha=0.3)
                 ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
-            fig_rel.tight_layout()
             self.rel_png.parent.mkdir(parents=True, exist_ok=True)
-            fig_rel.savefig(self.rel_png, dpi=300)
+            fig_rel.savefig(self.rel_png, dpi=300, bbox_inches="tight", pad_inches=0.1)
             plt.close(fig_rel)
 
             out_obj.setdefault("plots", {})["abs_png"] = str(self.abs_png)

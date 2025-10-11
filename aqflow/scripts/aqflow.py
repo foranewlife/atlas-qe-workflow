@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import threading
+import os
 import sys
 import time
 from pathlib import Path
@@ -33,6 +35,7 @@ from aqflow.core.executor import (
     set_board_row_limit,
 )
 from aqflow.core.eos_post import EosPostProcessor
+import traceback
 
  
 
@@ -99,13 +102,13 @@ def cmd_board(args: argparse.Namespace) -> int:
 def cmd_local(args: argparse.Namespace, software: str) -> int:
     # Submit current directory to orchestrator (not the local service)
     watch = getattr(args, "watch", True)
-    interval = float(getattr(args, "interval", 0.5) or 0.5)
+    interval = float(getattr(args, "interval", 0.1) or 0.1)
     # apply row limit
     limit = getattr(args, "limit", 50)
     set_board_row_limit(None if (limit is not None and int(limit) <= 0) else int(limit))
     if watch:
         stop = Event()
-        t = Thread(target=watch_single_board, args=(BOARD_PATH, stop, interval), daemon=False)
+        t = Thread(target=watch_single_board, args=(BOARD_PATH, stop, interval), daemon=True)
         t.start()
     rc = submit_task(software, Path(os.getcwd()), Path(args.resources))
     if watch:
@@ -132,13 +135,18 @@ def cmd_eos(args: argparse.Namespace) -> int:
             return 0
         # Start watcher thread if requested
         watch = getattr(args, "watch", True)
-        interval = float(getattr(args, "interval", 0.5) or 0.5)
+        interval = float(getattr(args, "interval", 0.1) or 0.1)
         stop = Event()
         # apply row limit for run watch
         limit = getattr(args, "limit", 50)
         set_board_row_limit(None if (limit is not None and int(limit) <= 0) else int(limit))
         if watch:
-            t = Thread(target=watch_single_board, args=(BOARD_PATH, stop, interval), daemon=False)
+            t = Thread(
+                target=watch_single_board,
+                args=(BOARD_PATH, stop, interval),
+                kwargs={"show_logs": True},
+                daemon=True,
+            )
             t.start()
         results = ctrl.execute(tasks)
         stop.set()
@@ -178,9 +186,27 @@ def cmd_eos(args: argparse.Namespace) -> int:
                     )
             except Exception as e:
                 logging.getLogger("atlas-qe-workflow").error("EOS post failed: %s", e)
-        return 0 if not failed else 1
+        rc = 0 if not failed else 1
+        # Debug: log lingering non-daemon threads that could block exit (exclude MainThread/self)
+        try:
+            cur = threading.current_thread()
+            alive = [
+                th for th in threading.enumerate()
+                if th.is_alive() and not th.daemon and th is not cur and th.name != "MainThread"
+            ]
+            if alive:
+                logging.getLogger("atlas-qe-workflow").warning(
+                    "Non-daemon threads still alive at EOS end: %s",
+                    ", ".join(f"{th.name}" for th in alive),
+                )
+        except Exception:
+            pass
+        # Optional hard-exit to avoid any residual blocking threads
+        if os.environ.get("AQFLOW_FORCE_EXIT") in ("1", "true", "True"):
+            os._exit(rc)
+        return rc
     except Exception as e:
-        logging.getLogger("atlas-qe-workflow").error("EOS failed: %s", e)
+        logging.getLogger("atlas-qe-workflow").error("EOS failed: %s", traceback.format_exc())
         return 1
 
 

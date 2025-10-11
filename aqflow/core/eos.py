@@ -101,6 +101,7 @@ class EosController:
     def execute(self, tasks: List[TaskDef]) -> List[RunResult]:
         """Append tasks to board.json and run state machine until finish."""
         # Prepare board and append tasks as queued
+        logger.info("EOS execute: initializing executor and appending %d tasks", len(tasks))
         ex = Executor(self.resources_file, board_path=BOARD_PATH, run_meta={
             "tool": "eos",
             "args": ["aqflow", "eos", str(self.workflow_cfg_path)],
@@ -119,6 +120,7 @@ class EosController:
             })
         ex.add_tasks(entries)
         ex.save()
+        logger.info("EOS execute: starting executor run()")
         # Initialize eos.json using Pydantic model
         eos_tasks = [
             EosTaskEntry(
@@ -225,7 +227,10 @@ class EosController:
         )
         self._write_eos(eos_model)
 
-        ex.run()
+        # Run executor and log entry/exit for debugging blocking issues
+        t0 = time.time()
+        rc_run = ex.run()
+        logger.info("EOS execute: executor run() returned rc=%s in %.3fs", rc_run, time.time() - t0)
 
         # Energy verification & collection (independent interface, default 3 retries)
         # Build the minimal task list for the verifier (id, workdir)
@@ -235,6 +240,7 @@ class EosController:
         # Read scheduler override for max retries (optional)
         max_retries = 3
         
+        logger.info("EOS execute: ensure_energies_for_tasks starting")
         energies = ensure_energies_for_tasks(
             tasks=task_dicts,
             software_of=software_of,
@@ -242,6 +248,7 @@ class EosController:
             board_path=BOARD_PATH,
             max_retries=max_retries,
         )
+        logger.info("EOS execute: ensure_energies_for_tasks finished")
 
         # Persist energies into eos.json
         for e, t in zip(eos_model.tasks, tasks):
