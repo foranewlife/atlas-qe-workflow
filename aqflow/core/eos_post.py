@@ -7,7 +7,7 @@ Inputs:
 Outputs (under aqflow_data/ by default):
 - eos_post.json: multi-curve structured data (per-curve points + fits)
 - eos_points.tsv: tabular data with columns: volume_scale, volume_A3_per_atom, energy_eV_per_atom, status, structure, combination, workdir
-- eos_curve.png / eos_curve_relative.png: absolute and relative EOS curves (multi-curve overlay)
+- Per-structure plots: eos_curve_<structure>.png and eos_curve_relative_<structure>.png
 """
 
 from __future__ import annotations
@@ -229,124 +229,179 @@ class EosPostProcessor:
             "curves": [],  # will fill without private keys
         }
 
-        # Plotting (absolute and relative) with multiple curves
+        # Plotting: one figure per structure (absolute and relative)
         if self.make_plots and curves_out:
-            # Absolute/Relative plots with auto spacing; give a reasonable base size
-            fig_abs, ax_abs = plt.subplots(figsize=(9, 6))
-            fig_rel, ax_rel = plt.subplots(figsize=(9, 6))
+            # Group curves by structure
+            by_struct: Dict[str, List[Dict]] = {}
+            for cur in curves_out:
+                by_struct.setdefault(cur["structure"], []).append(cur)
 
-            # Choose colors
-            n = max(1, len(curves_out))
-            cmap = plt.cm.get_cmap("tab10", min(10, n)) if n <= 10 else plt.cm.get_cmap("tab20", min(20, n))
+            abs_map: Dict[str, str] = {}
+            rel_map: Dict[str, str] = {}
+            abs_html_map: Dict[str, str] = {}
+            rel_html_map: Dict[str, str] = {}
 
-            for idx, cur in enumerate(curves_out):
-                color = cmap(idx % cmap.N)
-                # Extract numeric vectors (sorted by volume for smooth lines)
-                vols = np.array([p["volume_A3"] for p in cur["points"] if p["energy_eV"] is not None and p["volume_A3"] is not None], dtype=float)
-                ens = np.array([p["energy_eV"] for p in cur["points"] if p["energy_eV"] is not None and p["volume_A3"] is not None], dtype=float)
-                if len(vols) == 0:
-                    continue
-                order = np.argsort(vols)
-                v = vols[order]
-                e = ens[order]
+            for struct, scurves in by_struct.items():
+                fig_abs, ax_abs = plt.subplots(figsize=(9, 6))
+                fig_rel, ax_rel = plt.subplots(figsize=(9, 6))
 
-                # Legend: structure | combination [B0=.. GPa if available]
-                pmg = cur.get("pmg_fit") or {}
-                if isinstance(pmg, dict) and pmg.get("b0_GPa") is not None and not pmg.get("error"):
-                    label = f"{cur['structure']} | {cur['combination']} | B0={pmg['b0_GPa']:.2f} GPa"
-                else:
-                    label = f"{cur['structure']} | {cur['combination']}"
-                ax_abs.scatter(v, e, color=color, s=45, alpha=0.8, zorder=3, label=label)
+                # Prepare Plotly figures (interactive)
+                try:
+                    import plotly.graph_objects as go  # noqa: WPS433 (runtime import)
+                    from plotly.io import write_html  # noqa: WPS433
+                    use_plotly = True
+                except Exception:
+                    use_plotly = False
+                if use_plotly:
+                    fig_abs_pl = go.Figure()
+                    fig_rel_pl = go.Figure()
 
-                eos_fit_obj = cur.get("_eos_fit_obj")
-                if eos_fit_obj is not None:
-                    vfit = np.linspace(v.min() * 0.9, v.max() * 1.1, 200)
-                    efit = eos_fit_obj.func(vfit)
-                    ax_abs.plot(
-                        vfit,
-                        efit,
-                        color=color,
-                        linewidth=2,
-                        linestyle='-',
-                        alpha=0.85,
-                        zorder=2,
+                # Colors per structure's curves
+                n = max(1, len(scurves))
+                cmap = plt.cm.get_cmap("tab10", min(10, n)) if n <= 10 else plt.cm.get_cmap("tab20", min(20, n))
+
+                for idx, cur in enumerate(scurves):
+                    color = cmap(idx % cmap.N)
+                    vols = np.array([p["volume_A3"] for p in cur["points"] if p["energy_eV"] is not None and p["volume_A3"] is not None], dtype=float)
+                    ens = np.array([p["energy_eV"] for p in cur["points"] if p["energy_eV"] is not None and p["volume_A3"] is not None], dtype=float)
+                    if len(vols) == 0:
+                        continue
+                    order = np.argsort(vols)
+                    v = vols[order]
+                    e = ens[order]
+
+                    # Legend: combination [B0=.. GPa]
+                    pmg = cur.get("pmg_fit") or {}
+                    if isinstance(pmg, dict) and pmg.get("b0_GPa") is not None and not pmg.get("error"):
+                        label = f"{cur['combination']} | B0={pmg['b0_GPa']:.2f} GPa"
+                    else:
+                        label = f"{cur['combination']}"
+                    ax_abs.scatter(v, e, color=color, s=45, alpha=0.8, zorder=3, label=label)
+                    if use_plotly:
+                        fig_abs_pl.add_trace(
+                            go.Scatter(
+                                x=v, y=e, mode="lines+markers",
+                                name=label,
+                                line=dict(color=f"rgba({int(color[0]*255)},{int(color[1]*255)},{int(color[2]*255)},0.95)", width=2),
+                                marker=dict(size=6),
+                                hovertemplate="V=%{x:.4f} A^3/atom<br>E=%{y:.6f} eV/atom<extra>%{fullData.name}</extra>",
+                            )
+                        )
+
+                    eos_fit_obj = cur.get("_eos_fit_obj")
+                    if eos_fit_obj is not None:
+                        vfit = np.linspace(v.min() * 0.9, v.max() * 1.1, 200)
+                        efit = eos_fit_obj.func(vfit)
+                        ax_abs.plot(vfit, efit, color=color, linewidth=2, linestyle='-', alpha=0.85, zorder=2)
+                        ax_abs.axvline(x=float(eos_fit_obj.v0), color=color, linestyle='--', alpha=0.6)
+                        ax_abs.plot(float(eos_fit_obj.v0), float(eos_fit_obj.e0), 'o', color=color, markersize=7, markeredgecolor='black', markeredgewidth=0.8, zorder=4)
+                        if use_plotly:
+                            fig_abs_pl.add_trace(
+                                go.Scatter(
+                                    x=vfit, y=efit, mode="lines", showlegend=False,
+                                    line=dict(color=f"rgba({int(color[0]*255)},{int(color[1]*255)},{int(color[2]*255)},0.7)", width=1.5),
+                                    hoverinfo="skip",
+                                )
+                            )
+                            # v0 marker as a separate point
+                            fig_abs_pl.add_trace(
+                                go.Scatter(
+                                    x=[float(eos_fit_obj.v0)], y=[float(eos_fit_obj.e0)], mode="markers", showlegend=False,
+                                    marker=dict(size=8, color=f"rgba({int(color[0]*255)},{int(color[1]*255)},{int(color[2]*255)},1.0)", line=dict(width=1, color="black")),
+                                    hovertemplate="v0=%{x:.4f}<br>E0=%{y:.6f}<extra></extra>",
+                                )
+                            )
+
+                    # Relative
+                    e0 = float(eos_fit_obj.e0) if eos_fit_obj is not None else float(np.min(e))
+                    ax_rel.scatter(v, e - e0, color=color, s=45, alpha=0.8, zorder=3, label=label)
+                    if use_plotly:
+                        fig_rel_pl.add_trace(
+                            go.Scatter(
+                                x=v, y=e - e0, mode="lines+markers",
+                                name=label,
+                                line=dict(color=f"rgba({int(color[0]*255)},{int(color[1]*255)},{int(color[2]*255)},0.95)", width=2),
+                                marker=dict(size=6),
+                                hovertemplate="V=%{x:.4f} A^3/atom<br>E−E0=%{y:.6f} eV/atom<extra>%{fullData.name}</extra>",
+                            )
+                        )
+                    if eos_fit_obj is not None:
+                        vfit = np.linspace(v.min() * 0.9, v.max() * 1.1, 200)
+                        efit = eos_fit_obj.func(vfit) - e0
+                        ax_rel.plot(vfit, efit, color=color, linewidth=2, linestyle='-', alpha=0.85, zorder=2)
+                        ax_rel.axvline(x=float(eos_fit_obj.v0), color=color, linestyle='--', alpha=0.6)
+                        ax_rel.plot(float(eos_fit_obj.v0), 0.0, 'o', color=color, markersize=7, markeredgecolor='black', markeredgewidth=0.8, zorder=4)
+                        if use_plotly:
+                            fig_rel_pl.add_trace(
+                                go.Scatter(
+                                    x=vfit, y=efit, mode="lines", showlegend=False,
+                                    line=dict(color=f"rgba({int(color[0]*255)},{int(color[1]*255)},{int(color[2]*255)},0.7)", width=1.5),
+                                    hoverinfo="skip",
+                                )
+                            )
+                            fig_rel_pl.add_trace(
+                                go.Scatter(
+                                    x=[float(eos_fit_obj.v0)], y=[0.0], mode="markers", showlegend=False,
+                                    marker=dict(size=8, color=f"rgba({int(color[0]*255)},{int(color[1]*255)},{int(color[2]*255)},1.0)", line=dict(width=1, color="black")),
+                                    hovertemplate="v0=%{x:.4f}<br>E−E0=0<extra></extra>",
+                                )
+                            )
+
+                # Decorate and save per-structure
+                ax_abs.set_xlabel("Volume (A^3/atom)", fontsize=14)
+                ax_abs.set_ylabel("Energy (eV/atom)", fontsize=14)
+                ax_abs.set_title(f"EOS Curves — {struct}", fontsize=16)
+                ax_abs.legend(fontsize=10, loc="center left", bbox_to_anchor=(1.02, 0.5), frameon=False, borderaxespad=0.0)
+                ax_abs.grid(True, alpha=0.3)
+
+                ax_rel.set_xlabel("Volume (A^3/atom)", fontsize=14)
+                ax_rel.set_ylabel("Energy - E0 (eV/atom)", fontsize=14)
+                ax_rel.set_title(f"EOS Curves Relative — {struct}", fontsize=16)
+                ax_rel.legend(fontsize=10, loc="center left", bbox_to_anchor=(1.02, 0.5), frameon=False, borderaxespad=0.0)
+                ax_rel.grid(True, alpha=0.3)
+                ax_rel.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+
+                out_dir = self.abs_png.parent
+                out_dir.mkdir(parents=True, exist_ok=True)
+                abs_path = out_dir / f"{self.abs_png.stem}_{struct}.png"
+                rel_path = out_dir / f"{self.rel_png.stem}_{struct}.png"
+                fig_abs.savefig(abs_path, dpi=300, bbox_inches="tight", pad_inches=0.1)
+                fig_rel.savefig(rel_path, dpi=300, bbox_inches="tight", pad_inches=0.1)
+                plt.close(fig_abs); plt.close(fig_rel)
+
+                abs_map[struct] = str(abs_path)
+                rel_map[struct] = str(rel_path)
+
+                # Write Plotly HTML (inline JS) when available
+                if use_plotly:
+                    fig_abs_pl.update_layout(
+                        title=f"EOS Curves — {struct}",
+                        xaxis_title="Volume (A^3/atom)", yaxis_title="Energy (eV/atom)",
+                        template="plotly_white",
+                        legend=dict(orientation="v"),
                     )
-                    ax_abs.axvline(x=float(eos_fit_obj.v0), color=color, linestyle='--', alpha=0.6)
-                    ax_abs.plot(
-                        float(eos_fit_obj.v0),
-                        float(eos_fit_obj.e0),
-                        'o',
-                        color=color,
-                        markersize=7,
-                        markeredgecolor='black',
-                        markeredgewidth=0.8,
-                        zorder=4,
+                    fig_rel_pl.update_layout(
+                        title=f"EOS Curves Relative — {struct}",
+                        xaxis_title="Volume (A^3/atom)", yaxis_title="Energy − E0 (eV/atom)",
+                        template="plotly_white",
+                        legend=dict(orientation="v"),
                     )
+                    abs_html = out_dir / f"{self.abs_png.stem}_{struct}.html"
+                    rel_html = out_dir / f"{self.rel_png.stem}_{struct}.html"
+                    try:
+                        write_html(fig_abs_pl, file=str(abs_html), full_html=True, include_plotlyjs="inline", auto_open=False)
+                        write_html(fig_rel_pl, file=str(rel_html), full_html=True, include_plotlyjs="inline", auto_open=False)
+                        abs_html_map[struct] = str(abs_html)
+                        rel_html_map[struct] = str(rel_html)
+                    except Exception:
+                        pass
 
-                # Relative
-                e0 = float(eos_fit_obj.e0) if eos_fit_obj is not None else float(np.min(e))
-                ax_rel.scatter(v, e - e0, color=color, s=45, alpha=0.8, zorder=3, label=label)
-                if eos_fit_obj is not None:
-                    vfit = np.linspace(v.min() * 0.9, v.max() * 1.1, 200)
-                    efit = eos_fit_obj.func(vfit) - e0
-                    ax_rel.plot(
-                        vfit,
-                        efit,
-                        color=color,
-                        linewidth=2,
-                        linestyle='-',
-                        alpha=0.85,
-                        zorder=2,
-                    )
-                    ax_rel.axvline(x=float(eos_fit_obj.v0), color=color, linestyle='--', alpha=0.6)
-                    ax_rel.plot(
-                        float(eos_fit_obj.v0),
-                        0.0,
-                        'o',
-                        color=color,
-                        markersize=7,
-                        markeredgecolor='black',
-                        markeredgewidth=0.8,
-                        zorder=4,
-                    )
-
-            # Decorate and save
-            for ax in (ax_abs,):
-                ax.set_xlabel("Volume (A^3/atom)", fontsize=14)
-                ax.set_ylabel("Energy (eV/atom)", fontsize=14)
-                ax.set_title("Equation of State (EOS) Curves", fontsize=16)
-                # Place legend to the right (outside) so it never covers the curves
-                ax.legend(
-                    fontsize=10,
-                    loc="center left",
-                    bbox_to_anchor=(1.02, 0.5),
-                    frameon=False,
-                    borderaxespad=0.0,
-                )
-                ax.grid(True, alpha=0.3)
-            self.abs_png.parent.mkdir(parents=True, exist_ok=True)
-            fig_abs.savefig(self.abs_png, dpi=300, bbox_inches="tight", pad_inches=0.1)
-            plt.close(fig_abs)
-
-            for ax in (ax_rel,):
-                ax.set_xlabel("Volume (A^3/atom)", fontsize=14)
-                ax.set_ylabel("Energy - E0 (eV/atom)", fontsize=14)
-                ax.set_title("EOS Curves Relative to Equilibrium Energy", fontsize=16)
-                ax.legend(
-                    fontsize=10,
-                    loc="center left",
-                    bbox_to_anchor=(1.02, 0.5),
-                    frameon=False,
-                    borderaxespad=0.0,
-                )
-                ax.grid(True, alpha=0.3)
-                ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
-            self.rel_png.parent.mkdir(parents=True, exist_ok=True)
-            fig_rel.savefig(self.rel_png, dpi=300, bbox_inches="tight", pad_inches=0.1)
-            plt.close(fig_rel)
-
-            out_obj.setdefault("plots", {})["abs_png"] = str(self.abs_png)
-            out_obj.setdefault("plots", {})["rel_png"] = str(self.rel_png)
+            out_obj.setdefault("plots", {})["abs_pngs"] = abs_map
+            out_obj.setdefault("plots", {})["rel_pngs"] = rel_map
+            if abs_html_map:
+                out_obj.setdefault("plots", {})["abs_htmls"] = abs_html_map
+            if rel_html_map:
+                out_obj.setdefault("plots", {})["rel_htmls"] = rel_html_map
 
         # Strip private helpers and store curves
         for cur in curves_out:

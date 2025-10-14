@@ -217,13 +217,25 @@ class StructureProcessor:
         structure: StructureConfig,
         volume_scale: float
     ) -> str:
-        """Load structure from file and scale volume."""
+        """Load structure using ASE, scale volume, and return POSCAR content.
+
+        Uses ASE to ensure robust parsing of various structure formats and
+        consistent coordinate/cell handling across the workflow.
+        """
+        from ase.io import read, write  # lazy import
+        import io
+
         structure_path = self._resolve_structure_path(structure.file)
 
-        with open(structure_path, 'r') as f:
-            poscar_content = f.read()
+        atoms = read(str(structure_path))
+        # Volume scales with the cube of linear dimensions
+        s = float(volume_scale) ** (1.0 / 3.0)
+        # Scale cell and atomic positions accordingly
+        atoms.set_cell(atoms.cell * s, scale_atoms=True)
 
-        return self._scale_poscar_volume(poscar_content, volume_scale)
+        buf = io.StringIO()
+        write(buf, atoms, format="vasp")  # POSCAR format
+        return buf.getvalue()
 
     def _generate_structure(
         self,

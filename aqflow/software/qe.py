@@ -10,6 +10,7 @@ from typing import List
 from .base import SoftwareInputGenerator
 from aqflow.core.configuration import StructureConfig, ParameterCombination, WorkflowConfiguration
 from aqflow.core.template_engine import TemplateProcessor, StructureProcessor
+from typing import Optional
 
 
 class QEInputGenerator(SoftwareInputGenerator):
@@ -34,9 +35,14 @@ class QEInputGenerator(SoftwareInputGenerator):
             combination=combination,
         )
 
-        # Append structure sections derived from POSCAR
+        # Append structure sections derived via ASE-backed POSCAR generation
         poscar = struct_proc.generate_structure_content(structure=structure, volume_scale=volume_scale)
         text = self._append_structure_sections(text, poscar)
+
+        # Compute nat and ntyp from the same structure using ASE and inject into &SYSTEM
+        nat, ntyp = self._count_nat_ntyp_from_poscar(poscar)
+        if nat is not None and ntyp is not None:
+            text = self._inject_nat_ntyp(text, nat, ntyp)
 
         input_path = work_dir / "qe.in"
         input_path.write_text(text)
@@ -93,6 +99,42 @@ class QEInputGenerator(SoftwareInputGenerator):
             apos.append(f"{label} {cart[0]:.10f} {cart[1]:.10f} {cart[2]:.10f}")
 
         return input_content + "\n" + "\n".join(cell) + "\n" + "\n".join(apos) + "\n"
+
+    def _count_nat_ntyp_from_poscar(self, poscar_content: str) -> tuple[Optional[int], Optional[int]]:
+        try:
+            from ase.io import read
+            import io
+            buf = io.StringIO(poscar_content)
+            atoms = read(buf, format="vasp")
+            nat = len(atoms)
+            syms = atoms.get_chemical_symbols()
+            ntyp = len(set(syms))
+            return nat, ntyp
+        except Exception:
+            return None, None
+
+    def _inject_nat_ntyp(self, content: str, nat: int, ntyp: int) -> str:
+        import re
+        # Replace existing nat/ntyp occurrences anywhere inside &SYSTEM block if present
+        def replace_in_system(block: str) -> str:
+            b = re.sub(r"(?im)\bnat\s*=\s*\d+", f"nat = {nat}", block)
+            b = re.sub(r"(?im)\bntyp\s*=\s*\d+", f"ntyp = {ntyp}", b)
+            # If nat/ntyp missing, insert before terminating '/'
+            if re.search(r"(?im)\bnat\s*=", b) is None:
+                b = re.sub(r"(?s)/\s*$", f"   nat = {nat}\n/", b)
+            if re.search(r"(?im)\bntyp\s*=", b) is None:
+                b = re.sub(r"(?s)/\s*$", f"   ntyp = {ntyp}\n/", b)
+            return b
+        # Find &SYSTEM ... /
+        m = re.search(r"(?is)&\s*system\b(.*?)/", content)
+        if not m:
+            # No explicit block; append a minimal SYSTEM block
+            system_block = f"\n&SYSTEM\n   nat = {nat}\n   ntyp = {ntyp}\n/\n"
+            return content + system_block
+        start = m.start()
+        end = m.end()
+        new_block = replace_in_system(content[start:end])
+        return content[:start] + new_block + content[end:]
 
 
 # Execution is handled by aqflow.core.executor
