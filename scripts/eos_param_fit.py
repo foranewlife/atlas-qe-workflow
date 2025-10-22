@@ -89,6 +89,7 @@ class OptimConfig:
     weight_v0: float
     weight_b0: float
     aggregate: str  # "mean" | "median"
+    optimize_params: Tuple[str, ...]
     min_improvement: float
     max_iterations: int
     resources: Optional[Path]
@@ -101,6 +102,44 @@ def _cfg_tuple(dct: Dict[str, Any] | None) -> Tuple[float, float] | None:
     if not dct:
         return None
     return float(dct[0]), float(dct[1])  # type: ignore[index]
+
+
+ALL_PARAM_NAMES: Tuple[str, ...] = ("paraA", "Gammax", "rHC_A", "rHC_B")
+
+
+def _normalize_optimize_params(raw: Any) -> Tuple[str, ...]:
+    if raw is None:
+        return ALL_PARAM_NAMES
+    allowed = {name.lower(): name for name in ALL_PARAM_NAMES}
+    items: List[str] = []
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text or text.lower() == "all":
+            return ALL_PARAM_NAMES
+        items = [seg for seg in text.replace(",", " ").split() if seg]
+    else:
+        for entry in raw:
+            if isinstance(entry, str):
+                parts = entry.replace(",", " ").split()
+            else:
+                parts = [str(entry)]
+            for part in parts:
+                part = part.strip()
+                if part:
+                    items.append(part)
+    seen: set[str] = set()
+    normalized: List[str] = []
+    for item in items:
+        key = item.lower()
+        if key not in allowed:
+            raise ValueError(f"Unsupported optimize param '{item}'. Allowed: {', '.join(ALL_PARAM_NAMES)}")
+        name = allowed[key]
+        if name not in seen:
+            seen.add(name)
+            normalized.append(name)
+    if not normalized:
+        return ALL_PARAM_NAMES
+    return tuple(normalized)
 
 
 def load_optim_config(path: Path) -> OptimConfig:
@@ -133,6 +172,7 @@ def load_optim_config(path: Path) -> OptimConfig:
         weight_v0=float(scoring.get("weight_v0", 10.0)),
         weight_b0=float(scoring.get("weight_b0", 1.0)),
         aggregate=str(scoring.get("aggregate", "mean")),
+        optimize_params=_normalize_optimize_params(params.get("optimize")),
         min_improvement=float(stopping.get("min_improvement", 0.5)),
         max_iterations=int(stopping.get("max_iterations", 8)),
         resources=(Path(runtime["resources"]).resolve() if runtime.get("resources") else None),
@@ -207,17 +247,25 @@ def build_grid(
     step: ParamStep,
     bounds: Optional[Bounds],
     neighborhood: str,
+    active_params: Iterable[str],
 ) -> List[Tuple[float, float, float, float]]:
     """Return list of parameter tuples (paraA, Gammax, rHC_A, rHC_B)."""
     c = center
     st = step
+    active = {name for name in active_params}
+    base = (c.paraA, c.Gammax, c.rHC_A, c.rHC_B)
     pts: List[Tuple[float, float, float, float]] = []
     if neighborhood == "full_grid":
+        def _grid_vals(name: str, center_val: float, step_val: float) -> List[float]:
+            if name in active and step_val != 0:
+                return [center_val - step_val, center_val, center_val + step_val]
+            return [center_val]
+
         vals = [
-            [c.paraA - st.paraA, c.paraA, c.paraA + st.paraA],
-            [c.Gammax - st.Gammax, c.Gammax, c.Gammax + st.Gammax],
-            [c.rHC_A - st.rHC_A, c.rHC_A, c.rHC_A + st.rHC_A],
-            [c.rHC_B - st.rHC_B, c.rHC_B, c.rHC_B + st.rHC_B],
+            _grid_vals("paraA", c.paraA, st.paraA),
+            _grid_vals("Gammax", c.Gammax, st.Gammax),
+            _grid_vals("rHC_A", c.rHC_A, st.rHC_A),
+            _grid_vals("rHC_B", c.rHC_B, st.rHC_B),
         ]
         for a in vals[0]:
             for g in vals[1]:
@@ -225,17 +273,21 @@ def build_grid(
                     for rb in vals[3]:
                         pts.append((a, g, ra, rb))
     else:  # axis_cross (default)
-        pts = [
-            (c.paraA, c.Gammax, c.rHC_A, c.rHC_B),
-            (c.paraA - st.paraA, c.Gammax, c.rHC_A, c.rHC_B),
-            (c.paraA + st.paraA, c.Gammax, c.rHC_A, c.rHC_B),
-            (c.paraA, c.Gammax - st.Gammax, c.rHC_A, c.rHC_B),
-            (c.paraA, c.Gammax + st.Gammax, c.rHC_A, c.rHC_B),
-            (c.paraA, c.Gammax, c.rHC_A - st.rHC_A, c.rHC_B),
-            (c.paraA, c.Gammax, c.rHC_A + st.rHC_A, c.rHC_B),
-            (c.paraA, c.Gammax, c.rHC_A, c.rHC_B - st.rHC_B),
-            (c.paraA, c.Gammax, c.rHC_A, c.rHC_B + st.rHC_B),
-        ]
+        pts = [base]
+        if "paraA" in active and st.paraA != 0:
+            pts.append((c.paraA - st.paraA, c.Gammax, c.rHC_A, c.rHC_B))
+            pts.append((c.paraA + st.paraA, c.Gammax, c.rHC_A, c.rHC_B))
+        if "Gammax" in active and st.Gammax != 0:
+            pts.append((c.paraA, c.Gammax - st.Gammax, c.rHC_A, c.rHC_B))
+            pts.append((c.paraA, c.Gammax + st.Gammax, c.rHC_A, c.rHC_B))
+        if "rHC_A" in active and st.rHC_A != 0:
+            pts.append((c.paraA, c.Gammax, c.rHC_A - st.rHC_A, c.rHC_B))
+            pts.append((c.paraA, c.Gammax, c.rHC_A + st.rHC_A, c.rHC_B))
+        if "rHC_B" in active and st.rHC_B != 0:
+            pts.append((c.paraA, c.Gammax, c.rHC_A, c.rHC_B - st.rHC_B))
+            pts.append((c.paraA, c.Gammax, c.rHC_A, c.rHC_B + st.rHC_B))
+        if len(pts) == 1:
+            pts = [base]
     # Clamp within bounds if provided
     out: List[Tuple[float, float, float, float]] = []
     for a, g, ra, rb in pts:
@@ -408,7 +460,32 @@ def plot_iteration(
     ys: List[float] = []
     cols: List[float] = []
     texts: List[str] = []
+    marker_symbols: List[str] = []
+    symbol_sequence = [
+        "circle",
+        "square",
+        "diamond",
+        "x",
+        "triangle-up",
+        "triangle-down",
+        "triangle-left",
+        "triangle-right",
+        "star",
+        "hexagon",
+    ]
+    if len(structures) > len(symbol_sequence):
+        print(
+            f"plot_iteration: more than {len(symbol_sequence)} structures; markers will repeat.",
+            file=sys.stderr,
+        )
+    symbol_map = {s: symbol_sequence[idx % len(symbol_sequence)] for idx, s in enumerate(structures)}
+    best_combo_name = None
+    best_combo_score = float("inf")
     for combo, rec in combos_scores.items():
+        combo_score = float(rec.get("score", float("inf")))
+        if combo_score < best_combo_score:
+            best_combo_score = combo_score
+            best_combo_name = combo
         agg = float(rec.get("score", float("inf")))
         for s in structures:
             m = (rec.get("by_structure") or {}).get(s)
@@ -418,18 +495,74 @@ def plot_iteration(
             ys.append(float(m["db_pct"]))
             cols.append(agg)
             texts.append(f"{combo}<br>{s}")
+            marker_symbols.append(symbol_map[s])
+    best_points: List[Tuple[float, float, str, str, float]] = []
+    if best_combo_name:
+        best_rec = combos_scores.get(best_combo_name, {})
+        bys = best_rec.get("by_structure") or {}
+        for s in structures:
+            m = bys.get(s)
+            if not m:
+                continue
+            best_points.append(
+                (
+                    float(m["dv_pct"]),
+                    float(m["db_pct"]),
+                    best_combo_name,
+                    s,
+                    float(m.get("score_s", float("inf"))),
+                )
+            )
     fig_sc = go.Figure(
         data=[
             go.Scatter(
                 x=xs,
                 y=ys,
                 mode="markers",
-                marker=dict(color=cols, colorscale="Viridis", showscale=True, size=9),
+                marker=dict(
+                    color=cols,
+                    colorscale="Viridis",
+                    showscale=True,
+                    size=9,
+                    symbol=marker_symbols,
+                ),
                 text=texts,
                 hovertemplate="dv%%=%{x:.2f}%%<br>db%%=%{y:.2f}%%<br>%{text}<extra>score</extra>",
             )
         ]
     )
+    if best_points:
+        best_xs = [p[0] for p in best_points]
+        best_ys = [p[1] for p in best_points]
+        best_combo = best_points[0][2]
+        best_texts = [f"{best_combo}<br>{p[3]}" for p in best_points]
+        best_scores = [p[4] for p in best_points]
+        best_symbols = [symbol_map[p[3]] for p in best_points]
+        fig_sc.add_trace(
+            go.Scatter(
+                x=best_xs,
+                y=best_ys,
+                mode="markers+text",
+                marker=dict(
+                    size=16,
+                    color="rgba(220,20,60,0.9)",
+                    line=dict(color="black", width=2),
+                    symbol=best_symbols,
+                ),
+                text=best_texts,
+                textposition="top center",
+                hovertemplate=(
+                    "Best combo<br>"
+                    "dv%%=%{x:.2f}%%<br>"
+                    "db%%=%{y:.2f}%%<br>"
+                    "%{text}<br>"
+                    "score_s=%{customdata:.6f}"
+                    "<extra></extra>"
+                ),
+                customdata=best_scores,
+                name="Best combo",
+            )
+        )
     fig_sc.update_layout(
         title="Per-structure error scatter (colored by aggregate score)",
         xaxis_title="dv% (V0)",
@@ -517,9 +650,16 @@ def summarize_to_tsv(path: Path, combos_scores: Dict[str, Dict[str, Any]], struc
 def main() -> int:
     ap = argparse.ArgumentParser(description="Iterative parameter fitting for EOS (ATLAS vs QE targets)")
     ap.add_argument("--config", required=True, help="Path to optimizer config YAML")
+    ap.add_argument(
+        "--optimize-paraA-gammax-only",
+        action="store_true",
+        help="Restrict optimization loop to paraA and Gammax (freeze rHC_A and rHC_B).",
+    )
     args = ap.parse_args()
 
     cfg = load_optim_config(Path(args.config))
+    if args.optimize_paraA_gammax_only:
+        cfg = dataclasses.replace(cfg, optimize_params=("paraA", "Gammax"))
     base = load_base_yaml(cfg.base_yaml)
     # Optional validation/read via AQFLOW API
     try:
@@ -552,7 +692,7 @@ def main() -> int:
         iterdir = exp_dir / f"iter_{it:02d}"
         iterdir.mkdir(parents=True, exist_ok=True)
 
-        params_list = build_grid(center, step, bounds, cfg.neighborhood)
+        params_list = build_grid(center, step, bounds, cfg.neighborhood, cfg.optimize_params)
         combos = make_atlas_combos(params_list, structure_names, cfg.atlas_template, cfg.pseudopotential_set)
         added = append_combos_inplace(cfg.base_yaml, combos)
         # Keep a record of what was appended this iteration
@@ -597,10 +737,10 @@ def main() -> int:
         prev_best = best_score
         # Shrink steps
         step = ParamStep(
-            paraA=step.paraA * cfg.shrink_factor,
-            Gammax=step.Gammax * cfg.shrink_factor,
-            rHC_A=step.rHC_A * cfg.shrink_factor,
-            rHC_B=step.rHC_B * cfg.shrink_factor,
+            paraA=step.paraA * cfg.shrink_factor if "paraA" in cfg.optimize_params else step.paraA,
+            Gammax=step.Gammax * cfg.shrink_factor if "Gammax" in cfg.optimize_params else step.Gammax,
+            rHC_A=step.rHC_A * cfg.shrink_factor if "rHC_A" in cfg.optimize_params else step.rHC_A,
+            rHC_B=step.rHC_B * cfg.shrink_factor if "rHC_B" in cfg.optimize_params else step.rHC_B,
         )
 
     # Write final best.json

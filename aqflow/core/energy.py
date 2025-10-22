@@ -114,12 +114,17 @@ def _requeue_tasks(board_path: Path, task_ids: Iterable[str]) -> None:
         t = tasks.get(tid)
         if not t:
             continue
-        # Delete per-workdir cache to force a clean recompute on retry
+        # Cleanup hidden dot-files in workdir on re-queue to remove stale markers
         try:
             wd = Path(t.get("workdir") or ".")
-            cache_file = wd / ".aqcache.json"
-            if cache_file.exists():
-                cache_file.unlink()
+            if wd.exists() and wd.is_dir():
+                for p in wd.iterdir():
+                    try:
+                        if p.name.startswith('.') and (p.is_file() or p.is_symlink()):
+                            p.unlink(missing_ok=True)
+                    except Exception:
+                        # best-effort
+                        pass
         except Exception:
             # best-effort; requeue proceeds regardless
             pass

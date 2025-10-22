@@ -22,6 +22,8 @@ from dataclasses import dataclass
 import shlex
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Iterable, Any
+import threading
+import queue
 import logging
 
 import yaml
@@ -235,8 +237,16 @@ class Executor:
         self._board = ensure_board(self._board_path, meta=run_meta or {"resources_file": str(self.resources_yaml)})
         self._run_started_at: Optional[float] = None
         self._overall_timeout_sec: Optional[float] = None
-        # Background jobs registry for optional non-blocking processes with deadlines
-        self._bg_jobs: list[dict] = []
+        # Event queue for worker threads
+        self._events: "queue.Queue[Dict[str, Any]]" = queue.Queue()
+        # Active task workers
+        self._workers: Dict[str, "TaskWorker"] = {}
+        # Per-host concurrency gates
+        self._host_semaphores: Dict[str, threading.Semaphore] = {}
+        # Fatal error flag propagated from workers
+        self._fatal_error: Optional[str] = None
+        # Probe concurrency gates per host
+        self._host_probe_semaphores: Dict[str, threading.Semaphore] = {}
 
     @property
     def board_path(self) -> Path:
@@ -303,38 +313,54 @@ class Executor:
         """Execute the plan.
 
         Local: spawn long-running process and return Popen.
-        Remote: rsync + launch runner script asynchronously via a single local command; return (popen, remote_dir, None).
+        Remote: defer submission to TaskWorker; return (None, remote_dir, None).
         """
         if plan.is_remote:
-            # 1) Write runner script locally inside workdir (will be rsynced)
-            self._write_remote_runner(plan.workdir, plan.remote_dir or str(plan.workdir), plan.run_cmd)
-            # 2) Compose combined async submit: ensure remote dir, rsync, then launch via ssh
-            host = plan.host or ""
-            remote_dir = plan.remote_dir or str(plan.workdir)
-            # For ssh payload use $HOME to avoid ~ issues inside quotes
-            rd_shell = "$HOME" + remote_dir[1:] if remote_dir.startswith('~') else remote_dir
-            mkdir_args = self._ssh_args(plan.host, f"mkdir -p \"{self._dq_escape(rd_shell)}\"")
-            mkdir_cmd = " ".join(shlex.quote(a) for a in mkdir_args)
-            # For rsync remote path, keep '~' so it expands on remote shell; do not quote the colon spec
-            rsync_cmd = f"rsync -az -e ssh {shlex.quote(str(plan.workdir))}/ {host}:{remote_dir}/"
-            start_inner = f"nohup bash \"{rd_shell}/.aq_launch.sh\" </dev/null >/dev/null 2>&1 & echo $! > \"{rd_shell}/.aq_pid\""
-            start_args = self._ssh_args(plan.host, start_inner)
-            start_cmd = " ".join(shlex.quote(a) for a in start_args)
-            combo_cmd = f"{mkdir_cmd} && {rsync_cmd} && {start_cmd}"
-            logger.info(f"Remote submit (async): {combo_cmd}")
-            pop = self._run_shell(combo_cmd, quiet=True, wait=None)
-            return pop, plan.remote_dir, None
+            logger.info(f"Remote task planned for host={plan.host} dir={plan.remote_dir}; submission will be handled by worker thread")
+            return None, plan.remote_dir, None
         else:
-            logger.info(f"Starting local in {plan.workdir}: {plan.run_cmd}")
-            pop = self._run_shell(plan.run_cmd, cwd=plan.workdir, env=plan.env, wait=None)
-            return pop, None, None
+            logger.info(f"Local task planned for dir={plan.workdir}; submission will be handled by worker thread")
+            return None, None, None
 
     def _ssh_args(self, host: Optional[str], inner: str) -> list[str]:
-        """Return argv list for ssh to run remote bash -lc with given payload string.
+        """Return argv list for ssh to run a remote command (no bash -lc).
 
-        Using argv avoids local shell expansion and quoting pitfalls.
+        We pass a single command string; tilde (~) expansion and operators
+        like && will be handled by the remote user's default shell.
         """
-        return ["ssh", str(host or ""), "bash", "-lc", inner]
+        return ["ssh", *SSH_OPTS, str(host or ""), inner]
+
+    def _rsync_ssh_e(self) -> str:
+        """Return the -e argument content for rsync with our SSH_OPTS."""
+        # Join options with spaces; these will be passed as a single string to rsync -e "ssh ..."
+        return "ssh " + " ".join(SSH_OPTS)
+
+    def _get_host_semaphore(self, host: str, limit: Optional[int] = None) -> threading.Semaphore:
+        """Return a semaphore for a host, creating it with the given limit if missing."""
+        if host not in self._host_semaphores:
+            self._host_semaphores[host] = threading.Semaphore(int(limit or 1))
+        return self._host_semaphores[host]
+
+    def _get_host_probe_semaphore(self, host: str, limit: Optional[int] = None) -> threading.Semaphore:
+        """Return a semaphore limiting concurrent probe ssh per host (lighter than rsync/start)."""
+        if host not in self._host_probe_semaphores:
+            self._host_probe_semaphores[host] = threading.Semaphore(int(limit or 2))
+        return self._host_probe_semaphores[host]
+
+    def _remote_path_expr(self, remote_dir: str) -> str:
+        """Return a shell-safe path expression for remote bash -lc:
+
+        - If remote_dir starts with '~', return ~/<quoted-rest> so tilde expands.
+        - Else return "<escaped-absolute>".
+        """
+        if remote_dir.startswith("~"):
+            rest = remote_dir[2:] if remote_dir.startswith("~/") else remote_dir[1:]
+            rest = rest.lstrip("/")
+            if rest:
+                return f"~/{self._dq_escape(rest)}"
+            else:
+                return "~"
+        return f"\"{self._dq_escape(remote_dir)}\""
 
     @staticmethod
     def _dq_escape(s: str) -> str:
@@ -344,18 +370,21 @@ class Executor:
     def _write_remote_runner(self, workdir: Path, remote_dir: str, raw_cmd: str) -> Path:
         """Create a runner script in local workdir to be executed on remote side.
 
-        The script will cd into the remote_dir (with ~ expanded via $HOME), write .aq_started,
-        run the user command under bash -lc, and write .aq_exit with rc and end timestamp.
+        The script will run in the target workdir, write .aq_started, then run the user
+        command (without bash -lc) and finally write .aq_exit with rc and end timestamp.
         """
         runner = Path(workdir) / ".aq_launch.sh"
-        rd_shell = "$HOME" + remote_dir[1:] if remote_dir.startswith('~') else remote_dir
+        rd_shell = self._remote_path_expr(remote_dir)
         content = (
             "#!/usr/bin/env bash\n"
             "set -e\n"
-            f"cd \"{rd_shell}\"\n"
+            f"cd {rd_shell}\n"
             "date +%s > .aq_started\n"
-            f"bash -lc \"{self._dq_escape(raw_cmd)}\"\n"
+            f"{raw_cmd}\n"
             "rc=$?\n"
+            "sync || true\n"
+            "sleep 0.1\n"
+            "sync || true\n"
             "printf \"%s %s\\n\" \"$rc\" \"$(date +%s)\" > .aq_exit\n"
         )
         try:
@@ -373,11 +402,9 @@ class Executor:
         env = os.environ.copy(); env.update(extra_env)
         started_at = time.time()
         plan = self._build_plan(tid, t, chosen, cmd, env)
+        # Defer actual submission/spawn to worker thread for both remote and local
         pop, remote_dir_actual, remote_pid = self._execute_plan(plan)
-        if plan.is_remote:
-            t["status"] = "created"
-        else:
-            t["status"] = "running"
+        t["status"] = "created"
         t["resource"] = chosen.get("name")
         t["cmd"] = cmd
         t["start_time"] = started_at
@@ -386,12 +413,13 @@ class Executor:
     def _plan_remote_prep(self, host: str, remote_dir: Optional[str], workdir: Path) -> list[str]:
         cmds: list[str] = []
         if remote_dir:
-            cmds.append(f"ssh {shlex.quote(host)} {shlex.quote('mkdir -p ' + remote_dir)}")
-            # Use rsync for efficient, incremental upload (no delete on remote)
+            mkdir_args = self._ssh_args(host, f"mkdir -p \"{self._dq_escape(remote_dir)}\"")
+            cmds.append(" ".join(shlex.quote(a) for a in mkdir_args))
+            # Use rsync for efficient, incremental upload (no delete on remote) with SSH_OPTS
             src = str(workdir) + "/"
             dst = f"{host}:{remote_dir}/"
             cmds.append(
-                f"rsync -az -e ssh {shlex.quote(src)} {shlex.quote(dst)}"
+                f"rsync -az --timeout=10 -e {shlex.quote(self._rsync_ssh_e())} {shlex.quote(src)} {dst}"
             )
         return cmds
 
@@ -404,7 +432,7 @@ class Executor:
 
     def _run_shell(
         self,
-        cmd: str,
+        cmd: Any,
         cwd: Optional[Path] = None,
         env: Optional[Dict[str, str]] = None,
         *,
@@ -414,6 +442,7 @@ class Executor:
         timeout: Optional[float] = None,
         name: Optional[str] = None,
         detached: bool = False,
+        fatal_on_error: bool = True,
     ) -> Any:
         """Spawn or run a shell command with optional async/capture behavior.
 
@@ -427,12 +456,12 @@ class Executor:
         - detached=True: start in a new session (POSIX) so signals affect the whole group.
         """
         popen_kwargs: Dict[str, Any] = {
-            "shell": True,
             "cwd": str(cwd) if cwd else None,
             "env": env,
             "stdin": subprocess.DEVNULL,
         }
-        logger.debug(f"_run_shell cmd={cmd!r} cwd={cwd} quiet={quiet} wait={wait} capture={capture_output} timeout={timeout} detached={detached}")
+        cmd_repr = " ".join(shlex.quote(x) for x in cmd) if isinstance(cmd, list) else cmd
+        logger.debug(f"_run_shell cmd={cmd_repr} cwd={cwd} quiet={quiet} wait={wait} capture={capture_output} timeout={timeout} detached={detached}")
         if quiet:
             popen_kwargs.update({
                 "stdout": subprocess.DEVNULL,
@@ -444,258 +473,186 @@ class Executor:
         if wait is True:
             # Synchronous execution path
             if capture_output:
-                res = subprocess.run(
-                    cmd,
-                    shell=True,
-                    cwd=popen_kwargs.get("cwd"),
-                    env=popen_kwargs.get("env"),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    stdin=subprocess.DEVNULL,
-                    timeout=timeout,
-                )
+                try:
+                    if isinstance(cmd, list):
+                        res = subprocess.run(
+                            cmd,
+                            shell=False,
+                            cwd=popen_kwargs.get("cwd"),
+                            env=popen_kwargs.get("env"),
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            stdin=subprocess.DEVNULL,
+                            timeout=timeout,
+                        )
+                    else:
+                        res = subprocess.run(
+                            cmd,
+                            shell=True,
+                            cwd=popen_kwargs.get("cwd"),
+                            env=popen_kwargs.get("env"),
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            stdin=subprocess.DEVNULL,
+                            timeout=timeout,
+                        )
+                except Exception as ex:
+                    if fatal_on_error:
+                        try:
+                            self._events.put({"type": "fatal", "message": f"_run_shell exec error: {ex}"})
+                        except Exception:
+                            pass
+                        raise
+                    else:
+                        # Return a pseudo-result object
+                        class R:
+                            pass
+                        r = R()
+                        r.returncode = 127
+                        r.stdout = b""
+                        r.stderr = str(ex).encode()
+                        logger.debug(f"_run_shell exec error tolerated (non-fatal): {ex}")
+                        return r
                 logger.debug(f"_run_shell done rc={res.returncode}")
+                if res.returncode not in (0, None):
+                    # Fatal: non-zero return is infrastructure failure for waited commands
+                    stderr_txt = ""
+                    try:
+                        if hasattr(res, "stderr") and res.stderr:
+                            stderr_txt = res.stderr.decode(errors="ignore").strip()
+                    except Exception:
+                        stderr_txt = ""
+                    msg = f"_run_shell failed rc={res.returncode}: {cmd_repr}" + (f"; stderr: {stderr_txt}" if stderr_txt else "")
+                    logger.error(msg)
+                    if fatal_on_error:
+                        try:
+                            self._events.put({"type": "fatal", "message": msg})
+                        except Exception:
+                            pass
+                        raise RuntimeError(msg)
+                    return res
                 return res
             else:
-                res = subprocess.run(
-                    cmd,
-                    shell=True,
-                    cwd=popen_kwargs.get("cwd"),
-                    env=popen_kwargs.get("env"),
-                    stdout=subprocess.DEVNULL if quiet else None,
-                    stderr=subprocess.DEVNULL if quiet else None,
-                    stdin=subprocess.DEVNULL,
-                    timeout=timeout,
-                )
+                try:
+                    if isinstance(cmd, list):
+                        res = subprocess.run(
+                            cmd,
+                            shell=False,
+                            cwd=popen_kwargs.get("cwd"),
+                            env=popen_kwargs.get("env"),
+                            stdout=subprocess.DEVNULL if quiet else None,
+                            stderr=subprocess.DEVNULL if quiet else None,
+                            stdin=subprocess.DEVNULL,
+                            timeout=timeout,
+                        )
+                    else:
+                        res = subprocess.run(
+                            cmd,
+                            shell=True,
+                            cwd=popen_kwargs.get("cwd"),
+                            env=popen_kwargs.get("env"),
+                            stdout=subprocess.DEVNULL if quiet else None,
+                            stderr=subprocess.DEVNULL if quiet else None,
+                            stdin=subprocess.DEVNULL,
+                            timeout=timeout,
+                        )
+                except Exception as ex:
+                    if fatal_on_error:
+                        try:
+                            self._events.put({"type": "fatal", "message": f"_run_shell exec error: {ex}"})
+                        except Exception:
+                            pass
+                        raise
+                    else:
+                        class R:
+                            pass
+                        r = R()
+                        r.returncode = 127
+                        r.stdout = b""
+                        r.stderr = str(ex).encode()
+                        logger.debug(f"_run_shell exec error tolerated (non-fatal): {ex}")
+                        return r
                 logger.debug(f"_run_shell done rc={res.returncode}")
+                if res.returncode not in (0, None):
+                    msg = f"_run_shell failed rc={res.returncode}: {cmd_repr}"
+                    logger.error(msg)
+                    if fatal_on_error:
+                        try:
+                            self._events.put({"type": "fatal", "message": msg})
+                        except Exception:
+                            pass
+                        raise RuntimeError(msg)
+                    return res
                 return res
         # Asynchronous spawn
-        proc = subprocess.Popen(cmd, **popen_kwargs)
-        if isinstance(wait, (int, float)) and wait > 0:
-            # Record for background monitoring by the executor loop
+        try:
+            if isinstance(cmd, list):
+                proc = subprocess.Popen(cmd, shell=False, **popen_kwargs)
+            else:
+                proc = subprocess.Popen(cmd, shell=True, **popen_kwargs)
+        except Exception as ex:
             try:
-                self._bg_jobs.append({
-                    "proc": proc,
-                    "deadline": time.time() + float(wait),
-                    "name": name or cmd,
-                    "started_at": time.time(),
-                    "detached": bool(detached),
-                })
+                self._events.put({"type": "fatal", "message": f"_run_shell spawn error: {ex}"})
             except Exception:
                 pass
+            raise
         return proc
 
-    def _poll_bg_jobs(self) -> None:
-        """Poll and enforce deadlines for background jobs created via _run_shell(wait=<seconds>)."""
-        if not getattr(self, "_bg_jobs", None):
-            return
-        now = time.time()
-        remain: list[dict] = []
-        for job in self._bg_jobs:
-            proc: subprocess.Popen = job.get("proc")
-            name = job.get("name")
-            dl = job.get("deadline", 0.0) or 0.0
-            rc = proc.poll()
-            if rc is not None:
-                logger.debug(f"Background job finished rc={rc}: {name}")
-                continue
-            if dl and now > dl:
-                # Timed out: best-effort terminate/kill
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
-                try:
-                    proc.wait(timeout=1.0)
-                except Exception:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                logger.warning(f"Background job timed out and was terminated: {name}")
-                continue
-            remain.append(job)
-        self._bg_jobs = remain
+
+        return self._drain_events(running, tasks)
 
     def _poll_running(self, running: Dict[str, Running], tasks: Dict[str, Dict], timeouts: Dict) -> bool:
-        progressed = False
-        for tid, run in list(running.items()):
-            rc = None
-            if run.is_remote:
-                # If submission is in 'created', flip to 'running' once .aq_pid appears
-                tdict_created = tasks.get(tid) or {}
-                if (tdict_created.get("status") == "created") and run.remote_dir:
-                    try:
-                        rd = run.remote_dir
-                        rd_shell = "$HOME" + rd[1:] if rd.startswith('~') else rd
-                        read_args = self._ssh_args(_remote_host(run.resource), f"test -s \"{self._dq_escape(rd_shell)}/.aq_pid\" && cat \"{self._dq_escape(rd_shell)}/.aq_pid\" || true")
-                        res = self._run_shell(" ".join(shlex.quote(a) for a in read_args), quiet=True, wait=True, capture_output=True, timeout=2)
-                        out = res.stdout if hasattr(res, "stdout") else b""
-                        if out.decode(errors="ignore").strip():
-                            tdict_created["status"] = "running"
-                            tdict_created["start_time"] = tdict_created.get("start_time") or time.time()
-                            self.save()
-                    except Exception:
-                        # if submit process already ended with failure and no pid, fail fast
-                        try:
-                            if run.popen and run.popen.poll() is not None and (time.time() - float(tdict_created.get("start_time") or 0)) > 3:
-                                tdict_created["status"] = "failed"
-                                tdict_created["exit_code"] = 127
-                                tdict_created["end_time"] = time.time()
-                                self.save()
-                                running.pop(tid, None)
-                                progressed = True
-                                continue
-                        except Exception:
-                            pass
-                # Remote detection via marker file .aq_exit
-                try:
-                    host = _remote_host(run.resource)
-                    if run.remote_dir:
-                        rd = run.remote_dir
-                        if rd.startswith("~"):
-                            rd_shell = "$HOME" + rd[1:]
-                        else:
-                            rd_shell = rd
-                        rd_esc = self._dq_escape(rd_shell)
-                        check_args = self._ssh_args(host, f"test -f \"{rd_esc}/.aq_exit\" && cat \"{rd_esc}/.aq_exit\" || true")
-                        res2 = self._run_shell(" ".join(shlex.quote(a) for a in check_args), quiet=True, wait=True, capture_output=True, timeout=2)
-                        out = res2.stdout if hasattr(res2, "stdout") else b""
-                        txt = out.decode(errors="ignore").strip()
-                        if txt:
-                            parts = txt.split()
-                            rc = int(parts[0]) if parts else 0
-                except Exception:
-                    rc = None
-            else:
-                rc = run.popen.poll()
-            t = tasks.get(tid) or {}
-            soft = None
-            if t.get("type") and isinstance(timeouts, dict):
-                soft = timeouts.get(t.get("type")) or timeouts.get("default")
-            if soft and t.get("start_time") and (rc is None):
-                if time.time() - float(t["start_time"]) > float(soft):
-                    if run.is_remote and run.remote_dir:
-                        # Try to terminate remote process group
-                        try:
-                            host = _remote_host(run.resource)
-                            rd = run.remote_dir
-                            if rd.startswith("~"):
-                                rd_shell = "$HOME" + rd[1:]
-                            else:
-                                rd_shell = rd
-                            rd_esc = self._dq_escape(rd_shell)
-                            kill_inner = (
-                                f"pid=$(cat \"{rd_esc}/.aq_pid\" 2>/dev/null || echo); "
-                                f"if [ -n \"$pid\" ]; then kill -TERM -- -$pid || true; sleep 1; kill -KILL -- -$pid || true; fi; "
-                                f"echo 124 $(date +%s) > \"{rd_esc}/.aq_exit\""
-                            )
-                            kill_args = self._ssh_args(host, kill_inner)
-                            self._run_shell(" ".join(shlex.quote(a) for a in kill_args), quiet=True, wait=True, timeout=2)
-                            rc = 124
-                        except Exception:
-                            rc = 124
-                    else:
-                        try:
-                            run.popen.kill()
-                        except Exception:
-                            pass
-                        rc = 124
-            if rc is None:
-                continue
-            progressed = True
-            if run.resource.get("type") == "remote":
-                # Plan pull and execute (side effects isolated)
-                pulls = self._plan_pull_outputs(run, tasks[tid])
-                if pulls:
-                    # Essential pull (job.out) synchronously
-                    self._run_shell(pulls[0], quiet=True, wait=True)
-                    # Optional full pull asynchronously
-                    for extra in pulls[1:]:
-                        logger.info(f"Async full pull: {extra}")
-                        self._run_shell(extra, quiet=True, detached=True, wait=None)
-                # After pulling outputs, cleanup remote working directory
-                for cmd in self._plan_remote_cleanup(run):
-                    logger.info(f"Executing remote cleanup (detached): {cmd}")
-                    # Fire-and-forget in a detached session; no timeout/poller enforcement
-                    self._run_shell(cmd, quiet=True, detached=True, wait=None)
-            # Prefer energy-parse success over return code
-            tdict = tasks[tid]
-            sw = tdict.get("type")
-            wd = Path(tdict.get("workdir") or ".")
-            energy_val = None
-            try:
-                from .energy import read_energy
-                energy_val = read_energy(sw, wd)
-            except Exception:
-                energy_val = None
-            rc_used = 0 if (energy_val is not None) else int(rc)
-            # Update status
-            self._update_status(tdict, rc_used)
-            logger.info(f"Task {tid} finished with exit code {rc} (used={rc_used})")
-            # Persist immediately so the board reflects task completion without delay
-            try:
-                self.save()
-            except Exception:
-                pass
-            # Write per-workdir cache on success
-            if rc_used == 0:
-                sw_conf = (run.resource.get("software") or {}).get(sw) or {}
-                from .cache import write_success_cache
-                write_success_cache(
-                    software=sw,
-                    bin_path=str(sw_conf.get("path")),
-                    run_cmd=str(tdict.get("cmd") or ""),
-                    workdir=wd,
-                    resource=run.resource,
-                    energy_eV=energy_val,
-                )
+        """Compatibility entry that drains worker events into the board state.
 
-            running.pop(tid, None)
+        Worker threads perform actual submission/polling; here we only merge their events
+        and signal whether any progress happened.
+        """
+        return self._drain_events(running, tasks)
+
+    def _drain_events(self, running: Dict[str, Running], tasks: Dict[str, Dict]) -> bool:
+        progressed = False
+        while True:
+            try:
+                ev = self._events.get_nowait()
+            except queue.Empty:
+                break
+            tid = ev.get("tid")
+            # fatal events may not have tid
+            if ev.get("type") == "fatal":
+                self._fatal_error = ev.get("message") or "fatal error from worker"
+                logger.error(f"Fatal error reported by worker {tid or ''}: {self._fatal_error}")
+                progressed = True
+                continue
+            if not tid or tid not in tasks:
+                continue
+            kind = ev.get("type")
+            if kind == "status":
+                status = ev.get("status")
+                meta = ev.get("meta") or {}
+                t = tasks[tid]
+                if status:
+                    t["status"] = status
+                for k, v in meta.items():
+                    t[k] = v
+                progressed = True
+                # Finalize
+                if status in ("succeeded", "failed", "timeout"):
+                    running.pop(tid, None)
+                    # Cleanup worker registry
+                    wk = self._workers.pop(tid, None)
+                    try:
+                        if wk:
+                            wk.join(timeout=0.1)
+                    except Exception:
+                        pass
+            elif kind == "log":
+                logger.info(ev.get("message", ""))
+            else:
+                # Unknown event; ignore
+                pass
         return progressed
 
-    def _plan_pull_outputs(self, run: Running, task: Dict) -> list[str]:
-        """Return a list of shell commands (strings) to collect remote outputs.
-
-        Pure planning: no side effects here.
-        """
-        cmds: list[str] = []
-        res = run.resource
-        host = _remote_host(res)
-        if not run.remote_dir:
-            return cmds
-        transfer = res.get("transfer") or {}
-        pull_all = bool(transfer.get("pull_all", False))
-        # Essential: rsync only job.out (incremental)
-        cmds.append(
-            f"rsync -az -e ssh {host}:{run.remote_dir}/job.out {task['workdir']}/job.out"
-        )
-        # Optional: full incremental pull (changed + new files only; no delete)
-        if pull_all:
-            cmds.append(
-                f"rsync -az -e ssh {host}:{run.remote_dir}/ {task['workdir']}/"
-            )
-        return cmds
-
-    def _plan_remote_cleanup(self, run: Running) -> list[str]:
-        """Return commands to delete remote working directory after outputs are pulled.
-
-        Safety: only act if remote_dir is set.
-        """
-
-        cmds: list[str] = []
-        if not run.remote_dir:
-            return cmds
-        host = _remote_host(run.resource)
-        cmds.append(
-            f"ssh {host} 'rm -rf {run.remote_dir}'"
-        )
-        return cmds
-
-    def _update_status(self, task: Dict, rc: int) -> None:
-        task["end_time"] = time.time()
-        task["exit_code"] = int(rc)
-        task["status"] = "succeeded" if rc == 0 else ("timeout" if rc == 124 else "failed")
+    # Removed legacy pull/cleanup helpers; worker threads handle transfers and cleanup now
 
     def _should_exit(self) -> bool:
         statuses = [t.get("status") for t in (self._board.get("tasks") or {}).values()]
@@ -715,16 +672,15 @@ class Executor:
 
                 # 2) 提交任务（轮询资源，能提交就提交）
                 logger.debug(f"Attempting to submit new tasks; currently running: {len(running)}")
-                submitted = self._submit_available(tasks, resources, running)
+                submitted = self._submit_available(tasks, resources, running, timeouts)
 
-                # 3) 错误处理/收尾
-                #    Poll background jobs (non-blocking) created via _run_shell(wait=<seconds>)
-                try:
-                    self._poll_bg_jobs()
-                except Exception:
-                    pass
+                # 3) 错误处理/收尾（worker事件合并后保存）
                 self._board["meta"]["last_update"] = time.time()
                 save_board(self._board_path, self._board)
+                # Exit on fatal error from any worker
+                if self._fatal_error:
+                    logger.error(f"Executor exiting due to fatal error: {self._fatal_error}")
+                    return 1
                 if self._should_exit():
                     return 0
                 logger.debug(f"Progressed: {progressed}, Submitted: {submitted}, Running: {len(running)}")
@@ -736,8 +692,11 @@ class Executor:
             self._board["meta"]["last_update"] = time.time()
             save_board(self._board_path, self._board)
             return 130
+        except Exception as ex:
+            logger.error(f"Executor fatal error: {ex}")
+            return 1
 
-    def _submit_available(self, tasks: Dict[str, Dict], resources: List[Dict], running: Dict[str, Running]) -> bool:
+    def _submit_available(self, tasks: Dict[str, Dict], resources: List[Dict], running: Dict[str, Running], timeouts: Dict) -> bool:
         """Scan queued tasks and try to submit any that fits current resource availability.
 
         Returns True if at least one task was marked succeeded by cache or started a process.
@@ -756,6 +715,10 @@ class Executor:
         # Iterate once per loop iteration (no inner loop); caller will call again next tick
         for tid, t in queued_items:
             logger.debug(f"Considering task {tid} for submission")
+            # Skip if a worker is already managing this task (avoid duplicate submissions)
+            if tid in self._workers:
+                logger.debug(f"Worker already active for {tid}; skipping re-submission")
+                continue
             if max_par and len(running) >= max_par:
                 break
             # If this task type is not supported by any resource, fail fast to avoid infinite waiting
@@ -830,7 +793,7 @@ class Executor:
                 workdir=workdir,
                 resource=chosen,
             )
-            logger.debug(f"Cache probe result for {tid}: hit={pr.hit if pr else 'N/A'}, key={pr.key if pr else 'N/A'}")
+            # logger.debug(f"Cache probe result for {tid}: hit={pr.hit if pr else 'N/A'}, key={pr.key if pr else 'N/A'}")
             if pr and pr.hit:
                 logger.info(f"Cache hit for {tid} (key={pr.key})")
                 now = time.time()
@@ -850,18 +813,15 @@ class Executor:
                 # do not consume resource slot when cached; continue to try next queued task
                 continue
 
+            # Start worker thread per task
             pop, remote_dir, cmd, started_at, remote_pid = self._start_process(tid, t, chosen, req)
-            running[tid] = Running(
-                popen=pop,
-                task_id=tid,
-                resource=chosen,
-                remote_dir=remote_dir,
-                cores=req,
-                started_at=started_at,
-                is_remote=(chosen.get("type") == "remote"),
-                remote_pid=remote_pid,
-            )
-            # Persist immediately after resource assignment and status change to 'running'
+            logger.info(f"Started task {tid} on resource {chosen.get('name')} with cmd: {cmd}")
+            worker = TaskWorker(executor=self, tid=tid, task=t.copy(), resource=chosen, req_cores=req, timeouts=timeouts)
+            worker.daemon = True
+            worker.start()
+            self._workers[tid] = worker
+            running[tid] = Running(popen=pop, task_id=tid, resource=chosen, remote_dir=remote_dir, cores=req, started_at=started_at, is_remote=(chosen.get("type") == "remote"), remote_pid=remote_pid)
+            # Persist immediately
             try:
                 self.save()
             except Exception:
@@ -880,6 +840,224 @@ class Running:
     started_at: float
     is_remote: bool = False
     remote_pid: Optional[int] = None
+
+
+class TaskWorker(threading.Thread):
+    def __init__(self, executor: Executor, tid: str, task: Dict[str, Any], resource: Dict[str, Any], req_cores: int, timeouts: Dict[str, Any]):
+        super().__init__(name=f"worker-{tid}")
+        self.ex = executor
+        self.tid = tid
+        self.task = task
+        self.resource = resource
+        self.req_cores = req_cores
+        self.timeouts = timeouts or {}
+        self.stop_evt = threading.Event()
+
+    def post(self, ev: Dict[str, Any]) -> None:
+        ev.setdefault("tid", self.tid)
+        try:
+            self.ex._events.put(ev)
+        except Exception:
+            pass
+
+    def run(self) -> None:
+        try:
+            if (self.resource.get("type") or "local") == "remote":
+                self._run_remote()
+            else:
+                self._run_local()
+        except Exception as ex:
+            self.post({"type": "status", "status": "failed", "meta": {"exit_code": 1, "end_time": time.time()}, "error": str(ex)})
+
+    def _run_remote(self) -> None:
+        host = _remote_host(self.resource)
+        workdir = Path(self.task.get("workdir") or ".")
+        remote_dir = (self.resource.get("workdir") or "")
+        remote_dir = f"{remote_dir.rstrip('/')}/{self.tid}"
+        # Submit async: mkdir + rsync + nohup launch
+        self.post({"type": "status", "status": "created", "meta": {"resource": self.resource.get("name"), "cmd": self.task.get("cmd"), "start_time": time.time()}})
+        # Ensure runner present locally
+        self.ex._write_remote_runner(workdir, remote_dir, self.task.get("cmd") or "")
+        dir_expr = self.ex._remote_path_expr(remote_dir)
+        mkdir_args = self.ex._ssh_args(host, f"mkdir -p {dir_expr}")
+        rsync_args = [
+            "rsync", "-az", "--timeout=10", "-e", self.ex._rsync_ssh_e(), f"{str(workdir)}/", f"{host}:{remote_dir}/"
+        ]
+        start_inner = f"cd {dir_expr} && nohup bash .aq_launch.sh </dev/null >/dev/null 2>&1 & echo $! > .aq_pid"
+        start_args = self.ex._ssh_args(host, start_inner)
+        # Per-host concurrency gate around heavy rsync/start
+        sem = self.ex._get_host_semaphore(host, (self.resource.get("connection") or {}).get("ssh_concurrency"))
+        with sem:
+            # Retry mkdir/rsync/start with backoff on transient network failures
+            def _attempt(cmd, desc, timeout_s=None):
+                backoff = 1.0
+                for i in range(3):
+                    res = self.ex._run_shell(cmd, quiet=True, wait=True, capture_output=True, timeout=timeout_s, fatal_on_error=False)
+                    rc = getattr(res, "returncode", 0)
+                    if rc in (0, None):
+                        return True, res
+                    err = ""
+                    try:
+                        if hasattr(res, "stderr") and res.stderr:
+                            err = res.stderr.decode(errors="ignore").strip()
+                    except Exception:
+                        err = ""
+                    self.post({"type": "log", "message": f"{self.tid}: {desc} attempt {i+1} failed rc={rc} {err}"})
+                    time.sleep(backoff)
+                    backoff *= 2
+                return False, res
+
+            self.post({"type": "log", "message": f"{self.tid}: creating remote dir {host}:{dir_expr}"})
+            ok, res_mk = _attempt(mkdir_args, "mkdir", timeout_s=8)
+            if not ok:
+                self.post({"type": "status", "status": "failed", "meta": {"exit_code": getattr(res_mk,'returncode',127), "end_time": time.time()}, "message": "mkdir failed after retries"})
+                return
+
+            self.post({"type": "log", "message": f"{self.tid}: uploading to {host}:{remote_dir}"})
+            ok, res_sync = _attempt(rsync_args, "rsync", timeout_s=None)
+            if not ok:
+                self.post({"type": "status", "status": "failed", "meta": {"exit_code": getattr(res_sync,'returncode',127), "end_time": time.time()}, "message": "rsync failed after retries"})
+                return
+
+            self.post({"type": "log", "message": f"{self.tid}: starting on remote"})
+            ok, res_start = _attempt(start_args, "start", timeout_s=8)
+            if not ok:
+                self.post({"type": "status", "status": "failed", "meta": {"exit_code": getattr(res_start,'returncode',127), "end_time": time.time()}, "message": "start failed after retries"})
+                return
+        # Probe loop
+        soft = float(self.timeouts.get(self.task.get("type"), self.timeouts.get("default", 0)) or 0)
+        started = time.time()
+        pid_set = False
+        while not self.stop_evt.is_set():
+            time.sleep(1.0)
+            # Flip to running when pid appears
+            if not pid_set:
+                read_args = self.ex._ssh_args(host, f"cd {dir_expr} && test -s .aq_pid && cat .aq_pid || true")
+                res_pid = self.ex._run_shell(read_args, quiet=True, wait=True, capture_output=True, timeout=2)
+                pid_txt = (res_pid.stdout.decode(errors="ignore") if hasattr(res_pid, "stdout") and res_pid.stdout else "").strip()
+                if pid_txt:
+                    try:
+                        rpid = int(pid_txt.splitlines()[0])
+                    except Exception:
+                        rpid = None
+                    self.post({"type": "status", "status": "running", "meta": {"remote_pid": rpid, "start_time": started}})
+                    pid_set = True
+            # Check .aq_exit
+            read_exit = self.ex._ssh_args(host, f"cd {dir_expr} && test -f .aq_exit && cat .aq_exit || true")
+            res_ex = self.ex._run_shell(read_exit, quiet=True, wait=True, capture_output=True, timeout=2)
+            txt = (res_ex.stdout.decode(errors="ignore") if hasattr(res_ex, "stdout") and res_ex.stdout else "").strip()
+            if txt:
+                try:
+                    rc = int((txt.split() or ["0"])[0])
+                except Exception:
+                    rc = 1
+                # Essential pull job.out
+                pull_job = [
+                    "rsync", "-az", "--timeout=10", "-e", self.ex._rsync_ssh_e(),
+                    f"{host}:{remote_dir}/job.out", f"{str(workdir)}/job.out"
+                ]
+                self.ex._run_shell(pull_job, quiet=True, wait=True, capture_output=True, timeout=20, fatal_on_error=False)
+                # Default: full directory incremental pull (required)
+                def _attempt_full():
+                    backoff = 1.0
+                    for i in range(3):
+                        full_args = [
+                            "rsync", "-az", "--timeout=30", "-e", self.ex._rsync_ssh_e(),
+                            f"{host}:{remote_dir}/", f"{str(workdir)}/"
+                        ]
+                        res_full = self.ex._run_shell(full_args, quiet=True, wait=True, capture_output=True, timeout=None, fatal_on_error=False)
+                        rc_full = getattr(res_full, "returncode", 0)
+                        if rc_full in (0, None):
+                            return True
+                        err = ""
+                        try:
+                            if hasattr(res_full, "stderr") and res_full.stderr:
+                                err = res_full.stderr.decode(errors="ignore").strip()
+                        except Exception:
+                            err = ""
+                        self.post({"type": "log", "message": f"{self.tid}: full pull attempt {i+1} failed rc={rc_full} {err}"})
+                        time.sleep(backoff)
+                        backoff *= 2
+                    return False
+                full_ok = _attempt_full()
+                # Parse energy
+                energy_val = None
+                try:
+                    from .energy import read_energy
+                    energy_val = read_energy(self.task.get("type"), workdir)
+                except Exception:
+                    energy_val = None
+                rc_used = 0 if (energy_val is not None) else int(rc)
+                # Enforce default full pull: if retrieval failed after retries, mark task failed
+                if not full_ok and rc_used == 0:
+                    rc_used = 125
+                # Write success cache in worker on success
+                if rc_used == 0:
+                    try:
+                        from .cache import write_success_cache
+                        sw = self.task.get("type")
+                        sw_conf = (self.resource.get("software") or {}).get(sw) or {}
+                        write_success_cache(
+                            software=sw,
+                            bin_path=str(sw_conf.get("path")),
+                            run_cmd=str(self.task.get("cmd") or ""),
+                            workdir=workdir,
+                            resource=self.resource,
+                            energy_eV=energy_val,
+                        )
+                    except Exception:
+                        pass
+                status = "succeeded" if rc_used == 0 else ("timeout" if rc_used == 124 else "failed")
+                self.post({"type": "status", "status": status, "meta": {"exit_code": rc_used, "end_time": time.time(), "energy_eV": energy_val}})
+                # Cleanup
+                cleanup_args = self.ex._ssh_args(host, f"rm -rf {dir_expr}")
+                self.ex._run_shell(cleanup_args, quiet=True, wait=None)
+                return
+            # Soft timeout
+            if soft and (time.time() - started) > soft:
+                kill_args = self.ex._ssh_args(host, f"cd {dir_expr} && pid=$(cat .aq_pid 2>/dev/null || echo); if [ -n \"$pid\" ]; then kill -TERM -- -$pid || true; sleep 1; kill -KILL -- -$pid || true; fi; echo 124 $(date +%s) > .aq_exit")
+                self.ex._run_shell(kill_args, quiet=True, wait=True, timeout=3)
+
+
+    def _run_local(self) -> None:
+        workdir = Path(self.task.get("workdir") or ".")
+        cmd = self.task.get("cmd") or ""
+        pop = self.ex._run_shell(cmd, cwd=workdir, env=None, wait=None)
+        self.post({"type": "status", "status": "running", "meta": {"start_time": time.time()}})
+        # Poll
+        while not self.stop_evt.is_set():
+            try:
+                rc = pop.poll()
+            except Exception:
+                rc = 1
+            if rc is not None:
+                # Parse energy
+                energy_val = None
+                try:
+                    from .energy import read_energy
+                    energy_val = read_energy(self.task.get("type"), workdir)
+                except Exception:
+                    energy_val = None
+                rc_used = 0 if (energy_val is not None) else int(rc)
+                if rc_used == 0:
+                    try:
+                        from .cache import write_success_cache
+                        sw = self.task.get("type")
+                        sw_conf = ((self.resource or {}).get("software") or {}).get(sw) or {}
+                        write_success_cache(
+                            software=sw,
+                            bin_path=str(sw_conf.get("path")),
+                            run_cmd=str(self.task.get("cmd") or ""),
+                            workdir=workdir,
+                            resource=self.resource,
+                            energy_eV=energy_val,
+                        )
+                    except Exception:
+                        pass
+                status = "succeeded" if rc_used == 0 else ("timeout" if rc_used == 124 else "failed")
+                self.post({"type": "status", "status": status, "meta": {"exit_code": rc_used, "end_time": time.time(), "energy_eV": energy_val}})
+                return
+            time.sleep(0.5)
 
 
 def _build_command(software: str, sw_conf: Dict, workdir: Path) -> Tuple[str, int, Dict[str, str]]:
@@ -1022,7 +1200,8 @@ def _build_rich_tables(
     for root, data in items:
         tasks = list((data.get("tasks") or {}).values())
         if not show_all:
-            tasks = [t for t in tasks if t.get("status") == "running"]
+            # Show active tasks by default (running + created)
+            tasks = [t for t in tasks if t.get("status") in ("running", "created")]
         tasks = [t for t in tasks if match_filters(t)]
         if not tasks:
             continue
@@ -1045,6 +1224,8 @@ def _build_rich_tables(
             table.add_column("name")
             table.add_column("type")
             table.add_column("status")
+            table.add_column("resource")
+            table.add_column("pid", justify="right")
             table.add_column("elapsed", justify="right")
             table.add_column("quick")
             # Limit rows to avoid flooding terminal
@@ -1055,12 +1236,24 @@ def _build_rich_tables(
                 name = (t.get("name") or "-")
                 typ = (t.get("type") or "-")
                 st = (t.get("status") or "-")
+                # Colorize status for readability
+                st_style = {
+                    "running": "green",
+                    "created": "yellow",
+                    "queued": "cyan",
+                    "succeeded": "bold green",
+                    "failed": "bold red",
+                    "timeout": "magenta",
+                }.get(st.lower(), "white")
+                st_rich = Text(st, style=st_style)
                 start = t.get("start_time") or 0
                 end = t.get("end_time") or None
                 sec = int((end or now) - start) if start else 0
                 elapsed = _fmt_elapsed(sec)
+                res_name = str(t.get("resource") or "-")
+                pid_txt = str(t.get("remote_pid") or "")
                 quick = f"cd {t.get('workdir', '.')}; tail -n 200 job.out"
-                table.add_row(tid, name, typ, st, elapsed, quick)
+                table.add_row(tid, name, typ, st_rich, res_name, pid_txt, elapsed, quick)
             renderables.append(table)
             if limit is not None and len(gtasks) > limit:
                 renderables.append(Text(f"… and {len(gtasks) - limit} more (use --limit to adjust)", style="dim italic"))
@@ -1296,3 +1489,8 @@ def watch_single_board(
             sys.stdout.write("\x1b[?25h"); sys.stdout.flush()
         except Exception:
             pass
+SSH_OPTS: List[str] = [
+    "-o", "BatchMode=yes",
+    "-o", "StrictHostKeyChecking=accept-new",
+    "-o", "ConnectTimeout=8",
+]

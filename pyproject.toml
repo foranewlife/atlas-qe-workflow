@@ -38,6 +38,7 @@ dependencies = [
     "psutil>=5.9.0",
     "h5py>=3.8.0",
     "ase>=3.22.0",
+    "rich>=14.2.0",
 ]
 
 [project.optional-dependencies]

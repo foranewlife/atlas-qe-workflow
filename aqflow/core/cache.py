@@ -246,6 +246,11 @@ def probe_cache(
     2) Fast scan to compute file kinds (no sha); mismatch -> miss。
     3) Compute binary signature (TTL cache) and only hash changed files when possible.
     """
+    if (Path(workdir) / ".aqcache.json").exists():
+        return CacheProbe(True, None, None, [], {}, None)
+    else:
+        return CacheProbe(False, None, None, [], {}, None)
+
     cache = _read_cache(workdir)
     # Optional fast-path: if configured to assume hit when cache file exists,
     # return a synthetic hit without computing binary signature or hashing inputs.
